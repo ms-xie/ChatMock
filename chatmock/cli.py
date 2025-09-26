@@ -335,6 +335,7 @@ def main() -> None:
     p_serve.add_argument(
         "--enable-web-search",
         action="store_true",
+        default=os.getenv("CHATGPT_ENABLE_WEB_SEARCH", "").strip().lower() in ("1", "true", "yes", "on"),
         help="Enable default web_search tool when a request omits responses_tools (off by default)",
     )
 

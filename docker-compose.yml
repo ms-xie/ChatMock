@@ -14,6 +14,8 @@ services:
     volumes:
       - chatmock_data:/data
       - ./prompt.md:/app/prompt.md:ro
+    depends_on:
+      - tailscaled
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)\" "]
       interval: 10s
@@ -33,5 +35,28 @@ services:
     ports:
       - "1455:1455"
 
+
+  # The new tailscaled service, acting as a network sidecar.
+  tailscaled:
+    image: tailscale/tailscale:latest
+    container_name: tailscaled
+    hostname: chatmock-server # The hostname that will appear in your Tailscale admin panel.
+    env_file: .env # For sourcing the TS_AUTHKEY
+    environment:
+      - TS_STATE_DIR=/var/lib/tailscale
+      # This command sequence starts the daemon, waits for it to be ready,
+      # authenticates, and then starts the funnel for port 8000.
+    command: ["/bin/sh", "/entrypoint.sh"]
+    volumes:
+      # Mount our new script into the container.
+      - ./docker/entrypoint-tailscale.sh:/entrypoint.sh
+      - tailscale_data:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+
 volumes:
   chatmock_data:
+  tailscale_data:
