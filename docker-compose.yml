@@ -9,8 +9,6 @@ services:
     env_file: .env
     environment:
       - CHATGPT_LOCAL_HOME=/data
-    ports:
-      - "8000:8000"
     volumes:
       - chatmock_data:/data
       - ./prompt.md:/app/prompt.md:ro
