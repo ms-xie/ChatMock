@@ -26,6 +26,7 @@ if [[ "$cmd" == "serve" ]]; then
   fi
 
   exec python chatmock.py "${ARGS[@]}"
+  
 elif [[ "$cmd" == "login" ]]; then
   ARGS=(login --no-browser)
   if bool "${VERBOSE:-}" || bool "${CHATGPT_LOCAL_VERBOSE:-}"; then
@@ -33,6 +34,10 @@ elif [[ "$cmd" == "login" ]]; then
   fi
 
   exec python chatmock.py "${ARGS[@]}"
+
+elif [[ "$cmd" == "info" ]]; then
+  exec python chatmock.py info
+
 else
   exec "$cmd" "$@"
 fi
