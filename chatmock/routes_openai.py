@@ -436,6 +436,402 @@ def completions() -> Response:
     return resp
 
 
+@openai_bp.route("/v1/responses", methods=["POST"])
+def responses() -> Response:
+    verbose = bool(current_app.config.get("VERBOSE"))
+    debug_model = current_app.config.get("DEBUG_MODEL")
+    reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
+    reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
+
+    def _normalize_input(source: Any) -> List[Dict[str, Any]]:
+        def _as_message(text: str) -> Dict[str, Any] | None:
+            if not isinstance(text, str) or not text.strip():
+                return None
+            return {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            }
+
+        if isinstance(source, str):
+            item = _as_message(source)
+            return [item] if item else []
+        if isinstance(source, dict):
+            return [source]
+        if isinstance(source, list):
+            items: List[Dict[str, Any]] = []
+            for entry in source:
+                if isinstance(entry, dict):
+                    items.append(entry)
+                elif isinstance(entry, str):
+                    msg = _as_message(entry)
+                    if msg:
+                        items.append(msg)
+            return items
+        return []
+
+    def _normalize_tools(raw: Any) -> List[Dict[str, Any]]:
+        tools_out: List[Dict[str, Any]] = []
+        if not isinstance(raw, list):
+            return tools_out
+        for tool in raw:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+                conv = convert_tools_chat_to_responses([tool])
+                if conv:
+                    converted = conv[0]
+                    fn = tool.get("function", {})
+                    if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+                        converted["name"] = fn.get("name")
+                    if "description" in tool and isinstance(tool.get("description"), str):
+                        converted["description"] = tool.get("description")
+                    if "strict" in tool:
+                        converted["strict"] = bool(tool.get("strict"))
+                    elif isinstance(fn, dict) and "strict" in fn:
+                        converted["strict"] = bool(fn.get("strict"))
+                    tools_out.append(converted)
+                continue
+            if tool.get("type") == "function" and isinstance(tool.get("name"), str):
+                params = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object", "properties": {}}
+                normalized = {
+                    "type": "function",
+                    "name": tool.get("name"),
+                    "description": tool.get("description") or "",
+                    "parameters": params,
+                    "strict": bool(tool.get("strict")),
+                }
+                tools_out.append(normalized)
+                continue
+            tools_out.append(tool)
+        return tools_out
+
+    raw_body = request.get_data(cache=True, as_text=True) or ""
+    if verbose:
+        try:
+            preview = raw_body[:2000]
+            print("IN POST /v1/responses\n" + preview)
+        except Exception:
+            pass
+
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except Exception:
+        try:
+            payload = json.loads(raw_body.replace("\r", "").replace("\n", ""))
+        except Exception:
+            return jsonify({"error": {"message": "Invalid JSON body"}}), 400
+
+    if bool(payload.get("background")):
+        return jsonify({"error": {"message": "background responses are not supported"}}), 400
+
+    stream_req = bool(payload.get("stream"))
+    stream_options = payload.get("stream_options") if isinstance(payload.get("stream_options"), dict) else {}
+
+    requested_model = payload.get("model")
+    model = normalize_model_name(requested_model, debug_model)
+
+    instructions = payload.get("instructions")
+    if not isinstance(instructions, str) or not instructions.strip():
+        instructions = _instructions_for_model(model)
+
+    input_items = _normalize_input(payload.get("input"))
+    if not input_items and isinstance(payload.get("messages"), list):
+        input_items = convert_chat_messages_to_responses_input(payload.get("messages"))
+    if not input_items and isinstance(payload.get("prompt"), str):
+        input_items = _normalize_input(payload.get("prompt"))
+    if not input_items and isinstance(payload.get("input"), dict):
+        input_items = _normalize_input([payload.get("input")])
+
+    tool_choice = payload.get("tool_choice", "auto")
+    parallel_tool_calls_value = payload.get("parallel_tool_calls")
+    if parallel_tool_calls_value is None:
+        parallel_tool_calls = True
+    else:
+        parallel_tool_calls = bool(parallel_tool_calls_value)
+
+    base_tools = _normalize_tools(payload.get("tools"))
+    tools_responses = list(base_tools)
+    responses_tools_payload = payload.get("responses_tools") if isinstance(payload.get("responses_tools"), list) else []
+    had_responses_tools = False
+    extra_tools: List[Dict[str, Any]] = []
+    if isinstance(responses_tools_payload, list):
+        for _tool in responses_tools_payload:
+            if not (isinstance(_tool, dict) and isinstance(_tool.get("type"), str)):
+                continue
+            if _tool.get("type") not in ("web_search", "web_search_preview"):
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": "Only web_search/web_search_preview are supported in responses_tools",
+                                "code": "RESPONSES_TOOL_UNSUPPORTED",
+                            }
+                        }
+                    ),
+                    400,
+                )
+            extra_tools.append(_tool)
+        if not extra_tools and bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
+            responses_tool_choice = payload.get("responses_tool_choice")
+            if not (isinstance(responses_tool_choice, str) and responses_tool_choice == "none"):
+                extra_tools = [{"type": "web_search"}]
+        if extra_tools:
+            try:
+                size = len(json.dumps(extra_tools))
+            except Exception:
+                size = 0
+            if size > 32768:
+                return (
+                    jsonify({"error": {"message": "responses_tools too large", "code": "RESPONSES_TOOLS_TOO_LARGE"}}),
+                    400,
+                )
+            had_responses_tools = True
+            tools_responses = (tools_responses or []) + extra_tools
+
+    responses_tool_choice = payload.get("responses_tool_choice")
+    if isinstance(responses_tool_choice, str) and responses_tool_choice in ("auto", "none"):
+        tool_choice = responses_tool_choice
+
+    include_values = payload.get("include") if isinstance(payload.get("include"), list) else []
+    store_requested = payload.get("store")
+    store_flag = bool(store_requested) if isinstance(store_requested, bool) else False
+
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+    extra_payload: Dict[str, Any] = {}
+    for key in (
+        "max_output_tokens",
+        "max_tool_calls",
+        "temperature",
+        "top_p",
+        "top_logprobs",
+        "service_tier",
+        "safety_identifier",
+        "prompt_cache_key",
+        "previous_response_id",
+    ):
+        if key in payload:
+            extra_payload[key] = payload.get(key)
+    if metadata is not None:
+        extra_payload["metadata"] = metadata
+    if isinstance(stream_options, dict) and stream_options:
+        extra_payload["stream_options"] = stream_options
+
+    requested_reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else None
+    reasoning_param = build_reasoning_param(reasoning_effort, reasoning_summary, requested_reasoning)
+    if isinstance(requested_reasoning, dict):
+        for k, v in requested_reasoning.items():
+            if k not in reasoning_param and v is not None:
+                reasoning_param[k] = v
+
+    upstream, error_resp = start_upstream_request(
+        model,
+        input_items,
+        instructions=instructions,
+        tools=tools_responses,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+        reasoning_param=reasoning_param,
+        include=include_values,
+        store=store_flag,
+        extra_payload=extra_payload,
+    )
+    if error_resp is not None:
+        return error_resp
+
+    record_rate_limits_from_response(upstream)
+
+    created = int(time.time())
+    if upstream.status_code >= 400:
+        try:
+            err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
+        except Exception:
+            err_body = {"raw": upstream.text}
+        if had_responses_tools:
+            if verbose:
+                print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
+            upstream2, err2 = start_upstream_request(
+                model,
+                input_items,
+                instructions=_instructions_for_model(model),
+                tools=base_tools,
+                tool_choice=payload.get("tool_choice", "auto"),
+                parallel_tool_calls=parallel_tool_calls,
+                reasoning_param=reasoning_param,
+                include=include_values,
+                store=store_flag,
+                extra_payload=extra_payload,
+            )
+            record_rate_limits_from_response(upstream2)
+            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
+                upstream = upstream2
+            else:
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": (err_body.get("error", {}) or {}).get("message", "Upstream error"),
+                                "code": "RESPONSES_TOOLS_REJECTED",
+                            }
+                        }
+                    ),
+                    (upstream2.status_code if upstream2 is not None else upstream.status_code),
+                )
+        else:
+            if verbose:
+                print("Upstream error status=", upstream.status_code)
+            return (
+                jsonify({"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}}),
+                upstream.status_code,
+            )
+
+    if stream_req:
+        def _relay():
+            try:
+                for chunk in upstream.iter_content(chunk_size=1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        resp = Response(
+            _relay(),
+            status=upstream.status_code,
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return resp
+
+    response_id = "resp"
+    latest_response: Dict[str, Any] | None = None
+    usage_obj: Dict[str, Any] | None = None
+    status_value: str | None = None
+    collected_text: Dict[int, str] = {}
+    error_message: str | None = None
+    error_payload: Dict[str, Any] | None = None
+
+    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, Any] | None:
+        try:
+            usage = (evt.get("response") or {}).get("usage")
+            if not isinstance(usage, dict):
+                return None
+            return usage
+        except Exception:
+            return None
+
+    try:
+        for raw_line in upstream.iter_lines(decode_unicode=False):
+            if not raw_line:
+                continue
+            decoded = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+            if not decoded.startswith("data: "):
+                continue
+            data = decoded[len("data: "):].strip()
+            if not data:
+                continue
+            if data == "[DONE]":
+                break
+            try:
+                evt = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(evt.get("response"), dict):
+                latest_response = evt.get("response")
+                if isinstance(latest_response.get("usage"), dict):
+                    usage_obj = latest_response.get("usage")
+                if isinstance(latest_response.get("id"), str):
+                    response_id = latest_response.get("id") or response_id
+                if isinstance(latest_response.get("status"), str):
+                    status_value = latest_response.get("status")
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("created"), int):
+                created = evt["response"].get("created") or created
+            kind = evt.get("type")
+            if kind == "response.output_text.delta":
+                idx = evt.get("output_index")
+                delta_txt = evt.get("delta") or ""
+                if isinstance(idx, int) and delta_txt:
+                    collected_text[idx] = collected_text.get(idx, "") + delta_txt
+            elif kind == "response.error":
+                error_payload = evt.get("error") if isinstance(evt.get("error"), dict) else None
+                error_message = ((error_payload or {}).get("message") or "response.error") if (error_payload or {}) else "response.error"
+                break
+            elif kind == "response.failed":
+                failure = evt.get("response", {}).get("error", {}) if isinstance(evt.get("response"), dict) else {}
+                if isinstance(failure, dict):
+                    error_payload = failure
+                    error_message = failure.get("message", "response.failed")
+                else:
+                    error_message = "response.failed"
+                break
+            usage_candidate = _extract_usage(evt)
+            if usage_candidate:
+                usage_obj = usage_candidate
+            if kind == "response.completed":
+                break
+    finally:
+        upstream.close()
+
+    if error_message:
+        err_body = {"message": error_message}
+        if isinstance(error_payload, dict):
+            err_body.update(error_payload)
+        resp = make_response(jsonify({"error": err_body}), 502)
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return resp
+
+    if latest_response is not None:
+        result = dict(latest_response)
+        result.setdefault("id", response_id)
+        result.setdefault("object", "response")
+        result.setdefault("created", created)
+        result["model"] = requested_model or result.get("model") or model
+        if metadata is not None:
+            result.setdefault("metadata", metadata)
+        if usage_obj and not isinstance(result.get("usage"), dict):
+            result["usage"] = usage_obj
+        if not result.get("status") and status_value:
+            result["status"] = status_value
+        resp = make_response(jsonify(result), upstream.status_code)
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return resp
+
+    fallback_output: List[Dict[str, Any]] = []
+    if collected_text:
+        for idx in sorted(collected_text.keys()):
+            text_value = collected_text.get(idx) or ""
+            if not text_value:
+                continue
+            fallback_output.append(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": f"{response_id}-output-{idx}",
+                    "content": [{"type": "output_text", "text": text_value}],
+                }
+            )
+
+    fallback_response = {
+        "id": response_id,
+        "object": "response",
+        "created": created,
+        "model": requested_model or model,
+        "output": fallback_output,
+        "status": status_value or "completed",
+    }
+    if metadata is not None:
+        fallback_response["metadata"] = metadata
+    if usage_obj:
+        fallback_response["usage"] = usage_obj
+    resp = make_response(jsonify(fallback_response), upstream.status_code)
+    for k, v in build_cors_headers().items():
+        resp.headers.setdefault(k, v)
+    return resp
+
+
 @openai_bp.route("/v1/models", methods=["GET"])
 def list_models() -> Response:
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
@@ -455,4 +851,3 @@ def list_models() -> Response:
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
-

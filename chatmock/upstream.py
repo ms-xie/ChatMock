@@ -50,6 +50,9 @@ def start_upstream_request(
     tool_choice: Any | None = None,
     parallel_tool_calls: bool = False,
     reasoning_param: Dict[str, Any] | None = None,
+    include: List[str] | None = None,
+    store: bool | None = False,
+    extra_payload: Dict[str, Any] | None = None,
 ):
     access_token, account_id = get_effective_chatgpt_auth()
     if not access_token or not account_id:
@@ -67,9 +70,13 @@ def start_upstream_request(
             resp.headers.setdefault(k, v)
         return None, resp
 
-    include: List[str] = []
+    include_values: List[str] = []
+    if isinstance(include, list):
+        for item in include:
+            if isinstance(item, str) and item:
+                include_values.append(item)
     if isinstance(reasoning_param, dict):
-        include.append("reasoning.encrypted_content")
+        include_values.append("reasoning.encrypted_content")
 
     client_session_id = None
     try:
@@ -89,15 +96,28 @@ def start_upstream_request(
         "tools": tools or [],
         "tool_choice": tool_choice if tool_choice in ("auto", "none") or isinstance(tool_choice, dict) else "auto",
         "parallel_tool_calls": bool(parallel_tool_calls),
-        "store": False,
+        "store": bool(store) if store is not None else False,
         "stream": True,
         "prompt_cache_key": session_id,
     }
-    if include:
-        responses_payload["include"] = include
+    if include_values:
+        # preserve order while removing duplicates
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for value in include_values:
+            if value not in seen:
+                deduped.append(value)
+                seen.add(value)
+        responses_payload["include"] = deduped
 
     if reasoning_param is not None:
         responses_payload["reasoning"] = reasoning_param
+
+    if isinstance(extra_payload, dict):
+        for key, value in extra_payload.items():
+            if value is None:
+                continue
+            responses_payload[key] = value
 
     headers = {
         "Authorization": f"Bearer {access_token}",
