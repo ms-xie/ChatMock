@@ -477,6 +477,8 @@ def responses() -> Response:
         for tool in raw:
             if not isinstance(tool, dict):
                 continue
+            if tool.get("type") == 'web_search_preview':
+                continue
             if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
                 conv = convert_tools_chat_to_responses([tool])
                 if conv:
@@ -625,7 +627,9 @@ def responses() -> Response:
             if k not in reasoning_param and v is not None:
                 reasoning_param[k] = v
 
-    print(f'first_try tools\n\n{tools_responses}\n\n')
+    if extra_payload:
+        print(f'This is not official response endpoint, these parameter will ignore:\n\n{extra_payload}')
+
     upstream, error_resp = start_upstream_request(
         model,
         input_items,
@@ -636,12 +640,36 @@ def responses() -> Response:
         reasoning_param=reasoning_param,
         include=include_values,
         store=store_flag,
-        extra_payload=extra_payload,
+        # extra_payload=extra_payload,
     )
     if error_resp is not None:
         return error_resp
 
     record_rate_limits_from_response(upstream)
+    # Check status
+    if upstream.status_code != 200:
+        # You can get the plain text or JSON error message
+        try:
+            error_text = upstream.text  # Raw text body
+            # or try JSON decoding if the server returns JSON
+            error_json = upstream.json()  
+        except ValueError:
+            error_json = None
+
+        print("Status code:", upstream.status_code)
+        print("Response JSON:", error_json)
+        print("Response JSON:", error_json)
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "message": f"Upstream error: {error_json or error_text}",
+                        "code": "RESPONSES_TOOLS_REJECTED",
+                    }
+                }
+            ),
+            (upstream.status_code if upstream is not None else 500),
+        )
 
     created = int(time.time())
     if upstream.status_code >= 400:
@@ -652,7 +680,6 @@ def responses() -> Response:
         if had_responses_tools:
             if verbose:
                 print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
-                print(f'second_try tools\n\n{base_tools}\n\n')
             upstream2, err2 = start_upstream_request(
                 model,
                 input_items,
@@ -663,8 +690,32 @@ def responses() -> Response:
                 reasoning_param=reasoning_param,
                 include=include_values,
                 store=store_flag,
-                extra_payload=extra_payload,
+                # extra_payload=extra_payload,
             )
+            # Check status
+            if upstream2.status_code != 200:
+                # You can get the plain text or JSON error message
+                try:
+                    error_text = upstream2.text  # Raw text body
+                    # or try JSON decoding if the server returns JSON
+                    error_json = upstream2.json()  
+                except ValueError:
+                    error_json = None
+
+                print("Status code 2:", upstream2.status_code)
+                print("Response text 2:", error_text)
+                print("Response JSON 2:", error_json)
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": f"Upstream error: {error_json or error_text}",
+                                "code": "RESPONSES_TOOLS_REJECTED",
+                            }
+                        }
+                    ),
+                    (upstream2.status_code if upstream2 is not None else 500),
+                )
             record_rate_limits_from_response(upstream2)
             if err2 is None and upstream2 is not None and upstream2.status_code < 400:
                 upstream = upstream2

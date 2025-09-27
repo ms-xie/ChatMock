@@ -115,9 +115,11 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
             return url
 
     input_items: List[Dict[str, Any]] = []
+    system_content = None
     for message in messages:
         role = message.get("role")
-        if role == "system":
+        if role in ["system", "developer"]:
+            system_content = message.get("content")
             continue
 
         if role == "tool":
@@ -187,6 +189,11 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
             continue
         role_out = "assistant" if role == "assistant" else "user"
         input_items.append({"type": "message", "role": role_out, "content": content_items})
+    
+    if system_content:
+        for item in input_items:
+            if item['role'] == 'user':
+                item['content'] = f"{system_content}\n\n---\n\n{item['content']}"
     return input_items
 
 

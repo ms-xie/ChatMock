@@ -128,6 +128,8 @@ def start_upstream_request(
         "session_id": session_id,
     }
 
+    # print('responses_payload\n\n---\n\n', responses_payload)
+
     try:
         upstream = requests.post(
             CHATGPT_RESPONSES_URL,
@@ -136,9 +138,12 @@ def start_upstream_request(
             stream=True,
             timeout=600,
         )
-    except requests.RequestException as e:
-        resp = make_response(jsonify({"error": {"message": f"Upstream ChatGPT request failed: {e}"}}), 502)
+        return upstream, None
+    except Exception as e:
+        # Covers requests errors and everything else
+        msg = f"Error while contacting ChatGPT: {type(e).__name__}: {e}"
+        status = 502 if isinstance(e, requests.RequestException) else 500
+        resp = make_response(jsonify({"error": {"message": msg}}), status)
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return None, resp
-    return upstream, None
