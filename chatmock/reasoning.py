@@ -80,7 +80,7 @@ def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | Non
     s = model.strip().lower()
     if not s:
         return None
-    efforts = {"minimal", "low", "medium", "high"}
+    efforts = {"minimal", "low", "medium", "high", "mini"}
 
     if ":" in s:
         maybe = s.rsplit(":", 1)[-1].strip()
@@ -89,6 +89,8 @@ def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | Non
 
     for sep in ("-", "_"):
         if s.endswith(sep + "minimal"):
+            return {"effort": "minimal"}
+        if s.endswith(sep + "mini"):
             return {"effort": "minimal"}
         if s.endswith(sep + "low"):
             return {"effort": "low"}

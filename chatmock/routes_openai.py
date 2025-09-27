@@ -229,7 +229,7 @@ def chat_completions() -> Response:
         except Exception:
             return None
     try:
-        for raw in upstream.iter_lines(decode_unicode=False):
+        for raw in upstream.iter_lines(chunk_size=1, decode_unicode=False):
             if not raw:
                 continue
             line = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
@@ -392,7 +392,7 @@ def completions() -> Response:
         except Exception:
             return None
     try:
-        for raw_line in upstream.iter_lines(decode_unicode=False):
+        for raw_line in upstream.iter_lines(chunk_size=1, decode_unicode=False):
             if not raw_line:
                 continue
             line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
@@ -741,19 +741,43 @@ def responses() -> Response:
             )
 
     if stream_req:
+        # 建議小塊 32~128 bytes；或用 None 讓底層決定，但可能較抖動
+        it = upstream.iter_content(chunk_size=64, decode_unicode=False)
+
+        try:
+            first_chunk = next(it)  # 阻塞到上游送出第一塊
+        except StopIteration:
+            first_chunk = b""
+
         def _relay():
             try:
-                for chunk in upstream.iter_content(chunk_size=1024):
+                # 2) 先把預取的第一塊送出去，讓客戶端盡快看到資料
+                if first_chunk:
+                    yield first_chunk
+                # 3) 其餘資料持續轉發
+                for chunk in it:
                     if chunk:
                         yield chunk
             finally:
                 upstream.close()
 
+        # 4) 回傳時帶上游 Content-Type、關閉中途緩衝、回報 Server-Timing
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # 若上游本來就是 SSE，會是 text/event-stream
+            "Content-Type": upstream.headers.get("Content-Type", "text/event-stream"),
+            # 對 Nginx/某些代理可關閉回應緩衝（若無 Nginx 也不影響）
+            "X-Accel-Buffering": "no",
+        }
+
         resp = Response(
             _relay(),
             status=upstream.status_code,
-            mimetype="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers=headers,
+            # SSE 建議用上面的 Content-Type 轉傳；若你要強制 SSE 可保留 mimetype 參數
+            # mimetype="text/event-stream",
+            direct_passthrough=True,  # 避免額外緩衝
         )
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
@@ -777,7 +801,7 @@ def responses() -> Response:
             return None
 
     try:
-        for raw_line in upstream.iter_lines(decode_unicode=False):
+        for raw_line in upstream.iter_lines(chunk_size=1, decode_unicode=False):
             if not raw_line:
                 continue
             decoded = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
@@ -894,6 +918,7 @@ def list_models() -> Response:
         ("gpt-5", ["high", "medium", "low", "minimal"]),
         ("gpt-5-codex", ["high", "medium", "low"]),
         ("codex-mini", []),
+        ("gpt-5-mini", [])
     ]
     model_ids: List[str] = []
     for base, efforts in model_groups:
