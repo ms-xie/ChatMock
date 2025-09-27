@@ -8,8 +8,10 @@ from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .http import build_cors_headers
 from .routes_openai import openai_bp
 from .routes_ollama import ollama_bp
-from .utils import read_auth_file
+from .utils import eprint, get_home_dir, load_chatgpt_tokens, parse_jwt_claims, read_auth_file
+from .limits import RateLimitWindow, compute_reset_at, load_rate_limit_snapshot
 
+from dataclasses import asdict
 
 def _load_expected_api_key() -> str | None:
     env_key = os.getenv("OPENAI_API_KEY")
@@ -107,6 +109,58 @@ def create_app(
     @app.get("/health")
     def health():
         return jsonify({"status": "ok"})
+
+    @app.get("/usage_info")
+    def usage_info():
+        from .cli import _print_usage_limits_block
+        access_token, account_id, id_token = load_chatgpt_tokens()
+        if not access_token or not id_token:
+            print("👤 Account")
+            print("  • Not signed in")
+            print("  • Run: python3 chatmock.py login")
+            print("")
+            _print_usage_limits_block()
+            return jsonify({
+                "usage_info": {
+                    "Login": "Not signed in. Run: `python3 chatmock.py login`"
+                }
+            })
+
+        id_claims = parse_jwt_claims(id_token) or {}
+        access_claims = parse_jwt_claims(access_token) or {}
+
+        email = id_claims.get("email") or id_claims.get("preferred_username") or "<unknown>"
+        plan_raw = (access_claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type") or "unknown"
+        plan_map = {
+            "plus": "Plus",
+            "pro": "Pro",
+            "free": "Free",
+            "team": "Team",
+            "enterprise": "Enterprise",
+        }
+        plan = plan_map.get(str(plan_raw).lower(), str(plan_raw).title() if isinstance(plan_raw, str) else "Unknown")
+
+        print("👤 Account")
+        print("  • Signed in with ChatGPT")
+        print(f"  • Login: {email}")
+        print(f"  • Plan: {plan}")
+        if account_id:
+            print(f"  • Account ID: {account_id}")
+        print("")
+        stored = _print_usage_limits_block()
+
+        output_dict = {
+            "usage_info": {
+                "Login": f"{email}",
+                "Plan": f'{plan}',
+            }
+        }
+        output_dict.update(asdict(stored))
+        
+        if account_id:
+            output_dict['usage_info']['Account ID'] = f'{account_id}'
+        return jsonify(output_dict)
+
 
     @app.after_request
     def _cors(resp):

@@ -40,7 +40,7 @@ def normalize_model_name(name: str | None, debug_model: str | None = None) -> st
         # fake gpt-5-mini
         "gpt-5-mini": "gpt-5",
     }
-    return mapping.get(base, base)
+    return mapping.get(base, "gpt-5")
 
 
 def start_upstream_request(
@@ -130,7 +130,7 @@ def start_upstream_request(
         "session_id": session_id,
     }
 
-    # print('responses_payload\n\n---\n\n', responses_payload)
+    print('responses_payload\n\n---\n\n', responses_payload, '\n\n---\n\n')
 
     try:
         upstream = requests.post(

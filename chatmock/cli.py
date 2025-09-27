@@ -131,7 +131,7 @@ def _format_local_datetime(dt: datetime) -> str:
     return f"{local.strftime('%b %d, %Y %H:%M')} {tz_name}"
 
 
-def _print_usage_limits_block() -> None:
+def _print_usage_limits_block():
     stored = load_rate_limit_snapshot()
     
     print("📊 Usage Limits")
@@ -185,6 +185,7 @@ def _print_usage_limits_block() -> None:
             print(f"    ⏳ Resets at: {reset_at_str}")
 
     print()
+    return stored
 
 def cmd_login(no_browser: bool, verbose: bool) -> int:
     home_dir = get_home_dir()
