@@ -19,3 +19,5 @@ dist/
 
 # OS clutter
 .DS_Store
+
+.env

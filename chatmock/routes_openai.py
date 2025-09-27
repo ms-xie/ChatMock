@@ -509,7 +509,7 @@ def responses() -> Response:
     raw_body = request.get_data(cache=True, as_text=True) or ""
     if verbose:
         try:
-            preview = raw_body[:2000]
+            preview = raw_body
             print("IN POST /v1/responses\n" + preview)
         except Exception:
             pass
@@ -557,6 +557,7 @@ def responses() -> Response:
     extra_tools: List[Dict[str, Any]] = []
     if isinstance(responses_tools_payload, list):
         for _tool in responses_tools_payload:
+            if _tool.get("type") == "web_search_preview": continue
             if not (isinstance(_tool, dict) and isinstance(_tool.get("type"), str)):
                 continue
             if _tool.get("type") not in ("web_search", "web_search_preview"):
@@ -624,6 +625,7 @@ def responses() -> Response:
             if k not in reasoning_param and v is not None:
                 reasoning_param[k] = v
 
+    print(f'first_try tools\n\n{tools_responses}\n\n')
     upstream, error_resp = start_upstream_request(
         model,
         input_items,
@@ -650,6 +652,7 @@ def responses() -> Response:
         if had_responses_tools:
             if verbose:
                 print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
+                print(f'second_try tools\n\n{base_tools}\n\n')
             upstream2, err2 = start_upstream_request(
                 model,
                 input_items,
@@ -666,6 +669,7 @@ def responses() -> Response:
             if err2 is None and upstream2 is not None and upstream2.status_code < 400:
                 upstream = upstream2
             else:
+                print(err2)
                 return (
                     jsonify(
                         {
