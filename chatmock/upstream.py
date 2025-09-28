@@ -130,7 +130,7 @@ def start_upstream_request(
         "session_id": session_id,
     }
 
-    print('responses_payload\n\n---\n\n', responses_payload, '\n\n---\n\n')
+    # print('responses_payload\n\n---\n\n', responses_payload, '\n\n---\n\n')
 
     try:
         upstream = requests.post(

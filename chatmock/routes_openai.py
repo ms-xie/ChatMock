@@ -4,7 +4,7 @@ import json
 import time
 from typing import Any, Dict, List
 
-from flask import Blueprint, Response, current_app, jsonify, make_response, request
+from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .limits import record_rate_limits_from_response
@@ -511,7 +511,7 @@ def responses() -> Response:
     raw_body = request.get_data(cache=True, as_text=True) or ""
     if verbose:
         try:
-            preview = raw_body
+            preview = raw_body[:2000]
             print("IN POST /v1/responses\n" + preview)
         except Exception:
             pass
@@ -628,7 +628,7 @@ def responses() -> Response:
                 reasoning_param[k] = v
 
     if extra_payload:
-        print(f'This is not official response endpoint, these parameter will ignore:\n\n{extra_payload}')
+        print(f'This is not official response endpoint, these parameter will ignore:\n{extra_payload}\n')
 
     upstream, error_resp = start_upstream_request(
         model,
@@ -741,44 +741,43 @@ def responses() -> Response:
             )
 
     if stream_req:
-        # 建議小塊 32~128 bytes；或用 None 讓底層決定，但可能較抖動
-        it = upstream.iter_content(chunk_size=64, decode_unicode=False)
-
+        line_iter = upstream.iter_lines(chunk_size=2048, decode_unicode=False)
         try:
-            first_chunk = next(it)  # 阻塞到上游送出第一塊
+            first_line = next(line_iter)
         except StopIteration:
-            first_chunk = b""
+            first_line = None
 
         def _relay():
             try:
-                # 2) 先把預取的第一塊送出去，讓客戶端盡快看到資料
-                if first_chunk:
-                    yield first_chunk
-                # 3) 其餘資料持續轉發
-                for chunk in it:
-                    if chunk:
-                        yield chunk
+                if first_line is not None:
+                    # iter_lines 移除換行；SSE 需還原
+                    yield first_line + b"\n"
+                for line in line_iter:
+                    # 注意：空行需保留，代表事件分隔
+                    yield line + b"\n"
+            except (GeneratorExit, BrokenPipeError):
+                # 客戶端斷線
+                pass
             finally:
                 upstream.close()
 
-        # 4) 回傳時帶上游 Content-Type、關閉中途緩衝、回報 Server-Timing
         headers = {
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
-            # 若上游本來就是 SSE，會是 text/event-stream
-            "Content-Type": upstream.headers.get("Content-Type", "text/event-stream"),
-            # 對 Nginx/某些代理可關閉回應緩衝（若無 Nginx 也不影響）
+            "Content-Type": upstream.headers.get(
+                "Content-Type",
+                "text/event-stream; charset=utf-8"
+            ),
             "X-Accel-Buffering": "no",
         }
-
         resp = Response(
-            _relay(),
+            stream_with_context(_relay()),
             status=upstream.status_code,
             headers=headers,
-            # SSE 建議用上面的 Content-Type 轉傳；若你要強制 SSE 可保留 mimetype 參數
-            # mimetype="text/event-stream",
-            direct_passthrough=True,  # 避免額外緩衝
+            direct_passthrough=True,
         )
+
+        # Preserve your CORS handling
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
