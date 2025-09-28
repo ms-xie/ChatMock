@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict
-
+from typing import Any, Dict, List
+import re
 
 def build_reasoning_param(
     base_effort: str = "medium", base_summary: str = "auto", overrides: Dict[str, Any] | None = None
@@ -25,7 +25,9 @@ def build_reasoning_param(
         summary = "auto"
 
     reasoning: Dict[str, Any] = {"effort": effort}
-    if summary != "none":
+    
+    # if minimal effort, do not summary
+    if summary != "none" and effort != "minimal":
         reasoning["summary"] = summary
     return reasoning
 
@@ -100,3 +102,46 @@ def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | Non
             return {"effort": "high"}
 
     return None
+
+def extract_last_query(input_items):
+    user_input = None
+    for i in range(len(input_items)-1, -1, -1):
+        item = input_items[i]
+        if item['role'] == 'user':
+            for j in range(len(item["content"])-1, -1, -1):
+                if item["content"][j]["type"] == "input_text":
+                    user_input = item["content"][j]['text']
+                    return user_input
+    
+    return None
+
+def clean_reasoning_tag_in_query(input_items):
+    for item in input_items:
+        if item['role'] == 'user':
+            for content in item["content"]:
+                if content["type"] == "input_text":
+                    content['text'] = re.sub(r"#([LMH])\b", "", content['text'], flags=re.IGNORECASE).strip()
+
+    return input_items
+
+def extract_reasoning_from_last_input(input_items):
+    if not isinstance(input_items, List) or not input_items:
+        return input_items, None
+    
+    user_input = extract_last_query(input_items)
+    
+    if not user_input:
+        return input_items, None
+    
+    match = re.search(r"#([LMH])\b", user_input, re.IGNORECASE)
+    
+    if match:
+        reasoning_effort = {
+            "L": "low",
+            "M": "medium",
+            "H": "high",
+        }[match.group(1).upper()]
+
+        return input_items, {"effort": reasoning_effort}
+    
+    return input_items, None

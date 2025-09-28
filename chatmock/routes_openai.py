@@ -11,7 +11,7 @@ from flask import Blueprint, Response, current_app, jsonify, make_response, requ
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
-from .reasoning import apply_reasoning_to_message, build_reasoning_param, extract_reasoning_from_model_name
+from .reasoning import apply_reasoning_to_message, build_reasoning_param, extract_reasoning_from_model_name, extract_reasoning_from_last_input, clean_reasoning_tag_in_query
 from .upstream import normalize_model_name, start_upstream_request
 from .utils import (
     convert_chat_messages_to_responses_input,
@@ -513,7 +513,7 @@ def responses() -> Response:
     raw_body = request.get_data(cache=True, as_text=True) or ""
     if verbose:
         try:
-            preview = raw_body[:2000]
+            preview = raw_body
             print("IN POST /v1/responses\n" + preview)
         except Exception:
             pass
@@ -622,10 +622,24 @@ def responses() -> Response:
     if isinstance(stream_options, dict) and stream_options:
         extra_payload["stream_options"] = stream_options
 
-    requested_reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else None
-    reasoning_param = build_reasoning_param(reasoning_effort, reasoning_summary, requested_reasoning)
-    if isinstance(requested_reasoning, dict):
-        for k, v in requested_reasoning.items():
+    model_reasoning = extract_reasoning_from_model_name(requested_model)
+    reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+    
+    input_items, reasoning_overrides_query = extract_reasoning_from_last_input(input_items)
+    input_items = clean_reasoning_tag_in_query(input_items)
+
+    if reasoning_overrides_query:
+        reasoning_overrides = reasoning_overrides_query
+        
+    reasoning_param = build_reasoning_param(reasoning_effort, reasoning_summary, reasoning_overrides)
+    
+    if reasoning_param.get('effort') == "minimal":
+        tools_responses = [
+            t for t in tools_responses
+            if t.get("type") != "web_search"
+        ]
+    if isinstance(reasoning_overrides, dict):
+        for k, v in reasoning_overrides.items():
             if k not in reasoning_param and v is not None:
                 reasoning_param[k] = v
 
