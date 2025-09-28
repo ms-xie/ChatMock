@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Dict, List
 
+import requests
 from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
@@ -907,6 +909,92 @@ def responses() -> Response:
     resp = make_response(jsonify(fallback_response), upstream.status_code)
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
+    return resp
+
+
+@openai_bp.route("/v1/embeddings", methods=["POST"])
+def embeddings() -> Response:
+    verbose = bool(current_app.config.get("VERBOSE"))
+    if verbose:
+        try:
+            preview = (request.get_data(cache=True, as_text=True) or "")[:2000]
+            print("IN POST /v1/embeddings\n" + preview)
+        except Exception:
+            pass
+
+    api_key = current_app.config.get("EXPECTED_API_KEY")
+    if not isinstance(api_key, str) or not api_key.strip():
+        env_key = os.getenv("OPENAI_API_KEY")
+        api_key = env_key.strip() if isinstance(env_key, str) else ""
+    if not api_key:
+        resp = make_response(jsonify({"error": {"message": "Server missing OpenAI API key"}}), 500)
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return resp
+
+    raw_body = request.get_data(cache=True) or b""
+
+    upstream_headers: Dict[str, str] = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": request.headers.get("Content-Type", "application/json"),
+    }
+
+    user_agent = request.headers.get("User-Agent")
+    if isinstance(user_agent, str) and user_agent.strip():
+        upstream_headers["User-Agent"] = user_agent.strip()
+    else:
+        upstream_headers["User-Agent"] = "ChatMockProxy/1.0"
+
+    for header_name, header_value in request.headers.items():
+        if not isinstance(header_value, str):
+            continue
+        lower = header_name.lower()
+        if lower.startswith("openai-") or lower.startswith("x-openai-"):
+            upstream_headers[header_name] = header_value
+
+    try:
+        upstream = requests.post(
+            "https://api.openai.com/v1/embeddings",
+            headers=upstream_headers,
+            data=raw_body,
+            timeout=120,
+        )
+    except requests.RequestException as exc:
+        if verbose:
+            print(f"Embeddings upstream error: {exc}")
+        resp = make_response(
+            jsonify({"error": {"message": f"Error contacting OpenAI embeddings: {exc}"}}),
+            502,
+        )
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return resp
+    except Exception as exc:  # pragma: no cover - safety net
+        if verbose:
+            print(f"Unexpected embeddings error: {exc}")
+        resp = make_response(
+            jsonify({"error": {"message": "Unexpected error contacting OpenAI embeddings"}}),
+            500,
+        )
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return resp
+
+    resp = make_response(upstream.content, upstream.status_code)
+    content_type = upstream.headers.get("Content-Type")
+    resp.headers["Content-Type"] = content_type or "application/json"
+
+    for header_name, header_value in upstream.headers.items():
+        lower = header_name.lower()
+        if lower in ("content-type", "content-length"):
+            continue
+        if lower.startswith("openai-") or lower.startswith("x-request-id") or lower.startswith("x-ratelimit-") or lower.startswith("cf-"):
+            resp.headers[header_name] = header_value
+
+    for k, v in build_cors_headers().items():
+        resp.headers.setdefault(k, v)
+
+    upstream.close()
     return resp
 
 
