@@ -71,6 +71,7 @@ def create_app(
     )
 
     app.config["EXPECTED_API_KEY"] = _load_expected_api_key()
+    app.json.ensure_ascii = False
 
     @app.before_request
     def _require_api_key():
@@ -147,18 +148,22 @@ def create_app(
         if account_id:
             print(f"  • Account ID: {account_id}")
         print("")
-        stored = _print_usage_limits_block()
+        stored, cache_lines = _print_usage_limits_block()
 
         output_dict = {
-            "usage_info": {
+            "👤 Account": {
                 "Login": f"{email}",
                 "Plan": f'{plan}',
-            }
+            },
+            'window': {}
         }
         output_dict.update(asdict(stored))
         
+        for i, l in enumerate(cache_lines):
+            output_dict['window'][f'line_{i+1}'] = l
+        
         if account_id:
-            output_dict['usage_info']['Account ID'] = f'{account_id}'
+            output_dict['👤 Account']['Account ID'] = f'{account_id}'
         return jsonify(output_dict)
 
 

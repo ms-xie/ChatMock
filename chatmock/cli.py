@@ -14,6 +14,7 @@ from .limits import RateLimitWindow, compute_reset_at, load_rate_limit_snapshot
 from .oauth import OAuthHTTPServer, OAuthHandler, REQUIRED_PORT, URL_BASE
 from .utils import eprint, get_home_dir, load_chatgpt_tokens, parse_jwt_claims, read_auth_file
 
+from typing import Any, Dict, List
 
 _STATUS_LIMIT_BAR_SEGMENTS = 30
 _STATUS_LIMIT_BAR_FILLED = "█"
@@ -130,20 +131,28 @@ def _format_local_datetime(dt: datetime) -> str:
     tz_name = local.tzname() or "local"
     return f"{local.strftime('%b %d, %Y %H:%M')} {tz_name}"
 
-
 def _print_usage_limits_block():
     stored = load_rate_limit_snapshot()
+
+    def print_and_save_line(cache_lines: List[str], text=None) -> List[str]:
+        if text:
+            print(text)
+            cache_lines.append(text) 
+        else:
+            print()
+        
+    cache_lines = []
     
-    print("📊 Usage Limits")
+    print_and_save_line(text="📊 Usage Limits", cache_lines=cache_lines)
     
     if stored is None:
-        print("  No usage data available yet. Send a request through ChatMock first.")
-        print()
+        print_and_save_line(text="  No usage data available yet. Send a request through ChatMock first.", cache_lines=cache_lines)
+        print_and_save_line(cache_lines=cache_lines)
         return
 
     update_time = _format_local_datetime(stored.captured_at)
-    print(f"Last updated: {update_time}")
-    print()
+    print_and_save_line(text=f"Last updated: {update_time}", cache_lines=cache_lines)
+    print_and_save_line(cache_lines=cache_lines)
 
     windows: list[tuple[str, str, RateLimitWindow]] = []
     if stored.snapshot.primary is not None:
@@ -152,13 +161,13 @@ def _print_usage_limits_block():
         windows.append(("📅", "Weekly limit", stored.snapshot.secondary))
 
     if not windows:
-        print("  Usage data was captured but no limit windows were provided.")
-        print()
+        print_and_save_line(text="  Usage data was captured but no limit windows were provided.", cache_lines=cache_lines)
+        print_and_save_line(cache_lines=cache_lines)
         return
 
     for i, (icon_label, desc, window) in enumerate(windows):
         if i > 0:
-            print()
+            print_and_save_line(cache_lines=cache_lines)
         
         percent_used = _clamp_percent(window.used_percent)
         remaining = max(0.0, 100.0 - percent_used)
@@ -169,23 +178,23 @@ def _print_usage_limits_block():
         usage_text = f"{percent_used:5.1f}% used"
         remaining_text = f"{remaining:5.1f}% left"
         
-        print(f"{icon_label} {desc}")
-        print(f"{color}{progress}{reset} {color}{usage_text}{reset} | {remaining_text}")
+        print_and_save_line(text=f"{icon_label} {desc}", cache_lines=cache_lines)
+        print_and_save_line(text=f"{color}{progress}{reset} {color}{usage_text}{reset} | {remaining_text}", cache_lines=cache_lines)
         
         reset_in = _format_reset_duration(window.resets_in_seconds)
         reset_at = compute_reset_at(stored.captured_at, window)
         
         if reset_in and reset_at:
             reset_at_str = _format_local_datetime(reset_at)
-            print(f"    ⏳ Resets in: {reset_in} at {reset_at_str}")
+            print_and_save_line(text=f"    ⏳ Resets in: {reset_in} at {reset_at_str}", cache_lines=cache_lines)
         elif reset_in:
-            print(f"    ⏳ Resets in: {reset_in}")
+            print_and_save_line(text=f"    ⏳ Resets in: {reset_in}", cache_lines=cache_lines)
         elif reset_at:
             reset_at_str = _format_local_datetime(reset_at)
-            print(f"    ⏳ Resets at: {reset_at_str}")
+            print_and_save_line(text=f"    ⏳ Resets at: {reset_at_str}", cache_lines=cache_lines)
 
-    print()
-    return stored
+    print_and_save_line(cache_lines=cache_lines)
+    return stored, cache_lines
 
 def cmd_login(no_browser: bool, verbose: bool) -> int:
     home_dir = get_home_dir()
