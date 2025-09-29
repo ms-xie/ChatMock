@@ -90,16 +90,19 @@ def parse_rate_limit_headers(headers: Mapping[str, Any]) -> Optional[RateLimitSn
         return None
 
 
-def _limits_path() -> str:
-    home = get_home_dir()
+def _limits_path(account_slug: str | None = None) -> str:
+    home = get_home_dir(account_slug=account_slug)
     return os.path.join(home, _LIMITS_FILENAME)
 
 
-def store_rate_limit_snapshot(snapshot: RateLimitSnapshot, captured_at: Optional[datetime] = None) -> None:
+def store_rate_limit_snapshot(
+    snapshot: RateLimitSnapshot,
+    captured_at: Optional[datetime] = None,
+    account_slug: str | None = None,
+) -> None:
     captured = captured_at or datetime.now(timezone.utc)
     try:
-        home = get_home_dir()
-        os.makedirs(home, exist_ok=True)
+        home = get_home_dir(account_slug=account_slug, ensure_exists=True)
         payload: dict[str, Any] = {
             "captured_at": captured.isoformat(),
         }
@@ -115,7 +118,7 @@ def store_rate_limit_snapshot(snapshot: RateLimitSnapshot, captured_at: Optional
                 "window_minutes": snapshot.secondary.window_minutes,
                 "resets_in_seconds": snapshot.secondary.resets_in_seconds,
             }
-        with open(_limits_path(), "w", encoding="utf-8") as fp:
+        with open(_limits_path(account_slug=account_slug), "w", encoding="utf-8") as fp:
             if hasattr(os, "fchmod"):
                 try:
                     os.fchmod(fp.fileno(), 0o600)
@@ -127,9 +130,9 @@ def store_rate_limit_snapshot(snapshot: RateLimitSnapshot, captured_at: Optional
         pass
 
 
-def load_rate_limit_snapshot() -> Optional[StoredRateLimitSnapshot]:
+def load_rate_limit_snapshot(account_slug: str | None = None) -> Optional[StoredRateLimitSnapshot]:
     try:
-        with open(_limits_path(), "r", encoding="utf-8") as fp:
+        with open(_limits_path(account_slug=account_slug), "r", encoding="utf-8") as fp:
             raw = json.load(fp)
     except FileNotFoundError:
         return None
@@ -178,7 +181,7 @@ def _dict_to_window(value: Any) -> Optional[RateLimitWindow]:
     return RateLimitWindow(used_percent=used, window_minutes=window, resets_in_seconds=resets)
 
 
-def record_rate_limits_from_response(response: Any) -> None:
+def record_rate_limits_from_response(response: Any, account_slug: str | None = None) -> None:
     if response is None:
         return
     headers = getattr(response, "headers", None)
@@ -187,7 +190,7 @@ def record_rate_limits_from_response(response: Any) -> None:
     snapshot = parse_rate_limit_headers(headers)
     if snapshot is None:
         return
-    store_rate_limit_snapshot(snapshot)
+    store_rate_limit_snapshot(snapshot, account_slug=account_slug)
 
 
 def compute_reset_at(captured_at: datetime, window: RateLimitWindow) -> Optional[datetime]:
@@ -197,4 +200,3 @@ def compute_reset_at(captured_at: datetime, window: RateLimitWindow) -> Optional
         return captured_at + timedelta(seconds=int(window.resets_in_seconds))
     except Exception:
         return None
-

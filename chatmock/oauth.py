@@ -49,6 +49,8 @@ class OAuthHTTPServer(http.server.HTTPServer):
         home_dir: str,
         client_id: str,
         verbose: bool = False,
+        account_slug: str | None = None,
+        persist_immediately: bool = True,
     ) -> None:
         super().__init__(server_address, request_handler_class, bind_and_activate=True)
         self.exit_code = 1
@@ -57,6 +59,9 @@ class OAuthHTTPServer(http.server.HTTPServer):
         self.issuer = DEFAULT_ISSUER
         self.token_endpoint = f"{self.issuer}/oauth/token"
         self.client_id = client_id
+        self.account_slug = account_slug
+        self.last_auth_bundle: AuthBundle | None = None
+        self.persist_immediately = persist_immediately
         port = server_address[1]
         self.redirect_uri = f"http://localhost:{port}/auth/callback"
         self.pkce = generate_pkce()
@@ -183,6 +188,10 @@ class OAuthHTTPServer(http.server.HTTPServer):
         return exchanged_access_token, success_url
 
     def persist_auth(self, bundle: AuthBundle) -> bool:
+        if not self.persist_immediately:
+            self.last_auth_bundle = bundle
+            self.exit_code = 0
+            return True
         auth_json_contents = {
             "OPENAI_API_KEY": bundle.api_key,
             "tokens": {
@@ -193,7 +202,10 @@ class OAuthHTTPServer(http.server.HTTPServer):
             },
             "last_refresh": bundle.last_refresh,
         }
-        return write_auth_file(auth_json_contents)
+        success = write_auth_file(auth_json_contents, account_slug=self.account_slug)
+        if success:
+            self.last_auth_bundle = bundle
+        return success
 
 
 class OAuthHandler(http.server.BaseHTTPRequestHandler):
@@ -241,8 +253,16 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
             },
             "last_refresh": auth_bundle.last_refresh,
         }
-        if write_auth_file(auth_json_contents):
+        if not self.server.persist_immediately:
+            self.server.last_auth_bundle = auth_bundle
             self.server.exit_code = 0
+            self._send_html(LOGIN_SUCCESS_HTML)
+            self._shutdown_after_delay(2.0)
+            return
+
+        if write_auth_file(auth_json_contents, account_slug=self.server.account_slug):
+            self.server.exit_code = 0
+            self.server.last_auth_bundle = auth_bundle
             self._send_html(LOGIN_SUCCESS_HTML)
         else:
             self.send_error(500, "Unable to persist auth file")

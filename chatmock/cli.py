@@ -10,16 +10,37 @@ from datetime import datetime
 
 from .app import create_app
 from .config import CLIENT_ID_DEFAULT
-from .limits import RateLimitWindow, compute_reset_at, load_rate_limit_snapshot
+from .limits import RateLimitWindow, StoredRateLimitSnapshot, compute_reset_at, load_rate_limit_snapshot
 from .oauth import OAuthHTTPServer, OAuthHandler, REQUIRED_PORT, URL_BASE
-from .utils import eprint, get_home_dir, load_chatgpt_tokens, parse_jwt_claims, read_auth_file
+from .utils import (
+    eprint,
+    get_accounts_base_dir,
+    get_active_account_slug,
+    load_chatgpt_tokens,
+    parse_jwt_claims,
+    read_auth_file,
+    list_known_accounts,
+    set_active_account_slug,
+    ensure_unique_account_slug,
+    remove_account,
+    update_account_metadata,
+    write_auth_file,
+)
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 _STATUS_LIMIT_BAR_SEGMENTS = 30
 _STATUS_LIMIT_BAR_FILLED = "█"
 _STATUS_LIMIT_BAR_EMPTY = "░"
 _STATUS_LIMIT_BAR_PARTIAL = "▓"
+
+_PLAN_NAME_MAP = {
+    "plus": "Plus",
+    "pro": "Pro",
+    "free": "Free",
+    "team": "Team",
+    "enterprise": "Enterprise",
+}
 
 
 def _clamp_percent(value: float) -> float:
@@ -131,95 +152,247 @@ def _format_local_datetime(dt: datetime) -> str:
     tz_name = local.tzname() or "local"
     return f"{local.strftime('%b %d, %Y %H:%M')} {tz_name}"
 
-def _print_usage_limits_block():
-    stored = load_rate_limit_snapshot()
 
-    def print_and_save_line(cache_lines: List[str], text=None) -> List[str]:
-        if text:
-            print(text)
-            cache_lines.append(text) 
-        else:
-            print()
-        
-    cache_lines = []
-    
-    print_and_save_line(text="📊 Usage Limits", cache_lines=cache_lines)
-    
-    if stored is None:
-        print_and_save_line(text="  No usage data available yet. Send a request through ChatMock first.", cache_lines=cache_lines)
-        print_and_save_line(cache_lines=cache_lines)
-        return
+def _plan_label(raw: Optional[str]) -> str:
+    if not isinstance(raw, str):
+        return "Unknown"
+    value = raw.strip()
+    if not value:
+        return "Unknown"
+    return _PLAN_NAME_MAP.get(value.lower(), value.title())
 
-    update_time = _format_local_datetime(stored.captured_at)
-    print_and_save_line(text=f"Last updated: {update_time}", cache_lines=cache_lines)
-    print_and_save_line(cache_lines=cache_lines)
 
-    windows: list[tuple[str, str, RateLimitWindow]] = []
-    if stored.snapshot.primary is not None:
-        windows.append(("⚡", "5 hour limit", stored.snapshot.primary))
-    if stored.snapshot.secondary is not None:
-        windows.append(("📅", "Weekly limit", stored.snapshot.secondary))
+def _profile_from_tokens(access_token: Optional[str], id_token: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    email: Optional[str] = None
+    plan_raw: Optional[str] = None
+
+    id_claims = parse_jwt_claims(id_token) or {}
+    if isinstance(id_claims, dict):
+        for key in ("email", "preferred_username", "name", "sub"):
+            candidate = id_claims.get(key)
+            if isinstance(candidate, str) and candidate:
+                email = candidate
+                break
+
+    access_claims = parse_jwt_claims(access_token) or {}
+    if isinstance(access_claims, dict):
+        auth_claims = access_claims.get("https://api.openai.com/auth")
+        if isinstance(auth_claims, dict):
+            raw_plan = auth_claims.get("chatgpt_plan_type")
+            if isinstance(raw_plan, str):
+                plan_raw = raw_plan.strip().lower() or None
+            elif raw_plan is not None:
+                plan_raw = str(raw_plan).strip().lower() or None
+
+    return email, plan_raw
+
+
+def _format_account_usage(snapshot: Optional[StoredRateLimitSnapshot]) -> tuple[List[str], bool]:
+    if snapshot is None:
+        return ["    Usage: no data recorded yet."], False
+
+    lines: List[str] = []
+    limit_hit = False
+    lines.append(f"    Last updated: {_format_local_datetime(snapshot.captured_at)}")
+
+    windows: List[tuple[str, str, RateLimitWindow]] = []
+    if snapshot.snapshot.primary is not None:
+        windows.append(("⚡", "5 hour limit", snapshot.snapshot.primary))
+    if snapshot.snapshot.secondary is not None:
+        windows.append(("📅", "Weekly limit", snapshot.snapshot.secondary))
 
     if not windows:
-        print_and_save_line(text="  Usage data was captured but no limit windows were provided.", cache_lines=cache_lines)
-        print_and_save_line(cache_lines=cache_lines)
-        return
+        lines.append("    Usage data available but no limit windows provided.")
+        return lines, False
 
-    for i, (icon_label, desc, window) in enumerate(windows):
-        if i > 0:
-            print_and_save_line(cache_lines=cache_lines)
-        
+    for icon_label, desc, window in windows:
         percent_used = _clamp_percent(window.used_percent)
+        limit_hit = limit_hit or percent_used >= 100.0
         remaining = max(0.0, 100.0 - percent_used)
         color = _get_usage_color(percent_used)
-        reset = _reset_color()
-        
+        reset_color = _reset_color()
         progress = _render_progress_bar(percent_used)
-        usage_text = f"{percent_used:5.1f}% used"
-        remaining_text = f"{remaining:5.1f}% left"
-        
-        print_and_save_line(text=f"{icon_label} {desc}", cache_lines=cache_lines)
-        print_and_save_line(text=f"{color}{progress}{reset} {color}{usage_text}{reset} | {remaining_text}", cache_lines=cache_lines)
-        
+        lines.append(
+            f"    {icon_label} {desc}: {color}{progress}{reset_color} {color}{percent_used:5.1f}% used{reset_color} | {remaining:5.1f}% left"
+        )
         reset_in = _format_reset_duration(window.resets_in_seconds)
-        reset_at = compute_reset_at(stored.captured_at, window)
-        
+        reset_at = compute_reset_at(snapshot.captured_at, window)
         if reset_in and reset_at:
-            reset_at_str = _format_local_datetime(reset_at)
-            print_and_save_line(text=f"    ⏳ Resets in: {reset_in} at {reset_at_str}", cache_lines=cache_lines)
+            lines.append(f"       ⏳ Resets in {reset_in} at {_format_local_datetime(reset_at)}")
         elif reset_in:
-            print_and_save_line(text=f"    ⏳ Resets in: {reset_in}", cache_lines=cache_lines)
+            lines.append(f"       ⏳ Resets in {reset_in}")
         elif reset_at:
-            reset_at_str = _format_local_datetime(reset_at)
-            print_and_save_line(text=f"    ⏳ Resets at: {reset_at_str}", cache_lines=cache_lines)
+            lines.append(f"       ⏳ Resets at {_format_local_datetime(reset_at)}")
 
-    print_and_save_line(cache_lines=cache_lines)
-    return stored, cache_lines
+    return lines, limit_hit
 
-def cmd_login(no_browser: bool, verbose: bool) -> int:
-    home_dir = get_home_dir()
-    client_id = CLIENT_ID_DEFAULT
-    if not client_id:
-        eprint("ERROR: No OAuth client id configured. Set CHATGPT_LOCAL_CLIENT_ID.")
-        return 1
+
+def _window_to_dict(window: Optional[RateLimitWindow]) -> Optional[Dict[str, Any]]:
+    if window is None:
+        return None
+    return {
+        "used_percent": window.used_percent,
+        "window_minutes": window.window_minutes,
+        "resets_in_seconds": window.resets_in_seconds,
+    }
+
+
+def _collect_accounts_state() -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for entry in list_known_accounts():
+        slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug:
+            continue
+        snapshot = load_rate_limit_snapshot(account_slug=slug)
+        usage_lines, limit_hit = _format_account_usage(snapshot)
+        usage_data: Dict[str, Any] = {}
+        if snapshot is not None:
+            usage_data = {
+                "captured_at": snapshot.captured_at.isoformat(),
+                "primary": _window_to_dict(snapshot.snapshot.primary),
+                "secondary": _window_to_dict(snapshot.snapshot.secondary),
+            }
+        rows.append(
+            {
+                "slug": slug,
+                "label": entry.get("label") or entry.get("email") or slug,
+                "email": entry.get("email"),
+                "plan": entry.get("plan"),
+                "account_id": entry.get("account_id"),
+                "last_used": entry.get("last_used"),
+                "usage_lines": usage_lines,
+                "limit_hit": limit_hit,
+                "usage": usage_data,
+            }
+        )
+    return rows
+
+
+def _print_account_dashboard(rows: List[Dict[str, Any]], active_slug: Optional[str]) -> None:
+    print("")
+    print("📂 ChatMock Account Manager")
+    if rows:
+        print("Accounts marked with !LIMIT will rotate automatically when limits reset.")
+    else:
+        print("Link a ChatGPT account to begin.")
+    print("")
+
+    if not rows:
+        print("Actions: n=new  q=quit")
+        print("")
+        return
+
+    for idx, row in enumerate(rows, start=1):
+        marker = ">>" if row["slug"] == active_slug else "  "
+        limit_flag = " !LIMIT" if row["limit_hit"] else ""
+        plan_display = _plan_label(row.get("plan"))
+        label = row.get("label") or row["slug"]
+        print(f"{marker} [{idx}] {label} ({plan_display}){limit_flag}")
+        if row.get("email"):
+            print(f"    Email: {row['email']}")
+        if row.get("account_id"):
+            print(f"    Account ID: {row['account_id']}")
+        if row.get("last_used"):
+            print(f"    Last used: {row['last_used']}")
+        for line in row["usage_lines"]:
+            print(line)
+        print("")
+
+    print("'>>' marks the active account. !LIMIT means the account is exhausted until reset.")
+    print("Actions: [number]=activate  n=new  d=delete  r=rename  q=quit")
+    
+
+
+def _prompt_account_index(rows: List[Dict[str, Any]], prompt_text: str) -> Optional[int]:
+    if not rows:
+        eprint("No accounts available.")
+        return None
+    try:
+        choice = input(prompt_text).strip()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        return None
+    if not choice:
+        return None
+    if not choice.isdigit():
+        eprint("Please enter a numeric selection.")
+        return None
+    idx = int(choice)
+    if idx < 1 or idx > len(rows):
+        eprint("Selection out of range.")
+        return None
+    return idx - 1
+
+
+def _handle_remove_account(rows: List[Dict[str, Any]]) -> bool:
+    idx = _prompt_account_index(rows, "Enter account number to delete: ")
+    if idx is None:
+        return False
+    row = rows[idx]
+    try:
+        confirm = input(f"Delete account '{row['label']}'? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        return False
+    if confirm not in ("y", "yes"):
+        eprint("Deletion cancelled.")
+        return False
+    if not remove_account(row["slug"]):
+        eprint("Failed to remove account.")
+        return False
+    eprint(f"Removed account '{row['label']}'.")
+    return True
+
+
+def _handle_rename_account(rows: List[Dict[str, Any]]) -> bool:
+    idx = _prompt_account_index(rows, "Enter account number to rename: ")
+    if idx is None:
+        return False
+    row = rows[idx]
+    try:
+        new_label = input("Enter new label: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        return False
+    if not new_label:
+        eprint("Rename cancelled.")
+        return False
+    update_account_metadata(row["slug"], label=new_label)
+    eprint(f"Updated label for '{row['label']}' → '{new_label}'.")
+    return True
+
+
+def _handle_login_new_account(client_id: str, no_browser: bool, verbose: bool) -> bool:
+    slug_hint = ensure_unique_account_slug("account")
+    base_dir = get_accounts_base_dir(ensure_exists=True)
 
     try:
         bind_host = os.getenv("CHATGPT_LOCAL_LOGIN_BIND", "127.0.0.1")
-        httpd = OAuthHTTPServer((bind_host, REQUIRED_PORT), OAuthHandler, home_dir=home_dir, client_id=client_id, verbose=verbose)
-    except OSError as e:
-        eprint(f"ERROR: {e}")
-        if e.errno == errno.EADDRINUSE:
-            return 13
-        return 1
+        httpd = OAuthHTTPServer(
+            (bind_host, REQUIRED_PORT),
+            OAuthHandler,
+            home_dir=base_dir,
+            client_id=client_id,
+            verbose=verbose,
+            account_slug=slug_hint,
+            persist_immediately=False,
+        )
+    except OSError as exc:
+        eprint(f"ERROR: {exc}")
+        if exc.errno == errno.EADDRINUSE:
+            eprint("Another login session may already be running.")
+        return False
 
     auth_url = httpd.auth_url()
+    interrupted = False
+
     with httpd:
         eprint(f"Starting local login server on {URL_BASE}")
         if not no_browser:
             try:
                 webbrowser.open(auth_url, new=1, autoraise=True)
-            except Exception as e:
-                eprint(f"Failed to open browser: {e}")
+            except Exception as browser_exc:
+                eprint(f"Failed to open browser: {browser_exc}")
         eprint(f"If your browser did not open, navigate to:\n{auth_url}")
 
         def _stdin_paste_worker() -> None:
@@ -230,31 +403,24 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
                 line = sys.stdin.readline().strip()
                 if not line:
                     return
-                try:
-                    from urllib.parse import urlparse, parse_qs
+                from urllib.parse import parse_qs, urlparse
 
-                    parsed = urlparse(line)
-                    params = parse_qs(parsed.query)
-                    code = (params.get("code") or [None])[0]
-                    state = (params.get("state") or [None])[0]
-                    if not code:
-                        eprint("Input did not contain an auth code. Ignoring.")
-                        return
-                    if state and state != httpd.state:
-                        eprint("State mismatch. Ignoring pasted URL for safety.")
-                        return
-                    eprint("Received redirect URL. Completing login without callback…")
-                    bundle, _ = httpd.exchange_code(code)
-                    if httpd.persist_auth(bundle):
-                        httpd.exit_code = 0
-                        eprint("Login successful. Tokens saved.")
-                    else:
-                        eprint("ERROR: Unable to persist auth file.")
+                parsed = urlparse(line)
+                params = parse_qs(parsed.query)
+                code = (params.get("code") or [None])[0]
+                state = (params.get("state") or [None])[0]
+                if not code:
+                    eprint("Input did not contain an auth code. Ignoring.")
+                    return
+                if state and state != httpd.state:
+                    eprint("State mismatch. Ignoring pasted URL for safety.")
+                    return
+                eprint("Received redirect URL. Completing login without callback…")
+                bundle, _ = httpd.exchange_code(code)
+                if httpd.persist_auth(bundle):
                     httpd.shutdown()
-                except Exception as exc:
-                    eprint(f"Failed to process pasted redirect URL: {exc}")
-            except Exception:
-                pass
+            except Exception as exc:
+                eprint(f"Failed to process pasted redirect URL: {exc}")
 
         try:
             import threading
@@ -262,11 +428,101 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
             threading.Thread(target=_stdin_paste_worker, daemon=True).start()
         except Exception:
             pass
+
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            eprint("\nKeyboard interrupt received, exiting.")
-        return httpd.exit_code
+            interrupted = True
+            eprint("\nKeyboard interrupt received, aborting login.")
+
+    if interrupted:
+        return False
+
+    if httpd.exit_code != 0 or httpd.last_auth_bundle is None:
+        eprint("Login was not completed.")
+        return False
+
+    bundle = httpd.last_auth_bundle
+    email, plan_raw = _profile_from_tokens(bundle.token_data.access_token, bundle.token_data.id_token)
+    slug_seed = email or bundle.token_data.account_id or "account"
+    final_slug = ensure_unique_account_slug(slug_seed)
+    auth_payload = {
+        "OPENAI_API_KEY": bundle.api_key,
+        "tokens": {
+            "id_token": bundle.token_data.id_token,
+            "access_token": bundle.token_data.access_token,
+            "refresh_token": bundle.token_data.refresh_token,
+            "account_id": bundle.token_data.account_id,
+        },
+        "last_refresh": bundle.last_refresh,
+    }
+
+    if not write_auth_file(auth_payload, account_slug=final_slug):
+        eprint("ERROR: Unable to persist auth file for new account.")
+        return False
+
+    update_account_metadata(
+        final_slug,
+        label=email or final_slug,
+        email=email,
+        plan=plan_raw,
+        account_id=bundle.token_data.account_id,
+        last_used=bundle.last_refresh,
+    )
+    set_active_account_slug(final_slug)
+
+    plan_display = _plan_label(plan_raw)
+    eprint(f"Linked new account '{email or final_slug}' ({plan_display}). Now active.")
+    return True
+
+
+def cmd_login(no_browser: bool, verbose: bool) -> int:
+    client_id = CLIENT_ID_DEFAULT
+    if not client_id:
+        eprint("ERROR: No OAuth client id configured. Set CHATGPT_LOCAL_CLIENT_ID.")
+        return 1
+
+    while True:
+        rows = _collect_accounts_state()
+        active_slug = get_active_account_slug()
+        _print_account_dashboard(rows, active_slug)
+
+        try:
+            choice = input("Selection: ").strip()
+        except EOFError:
+            print("")
+            return 0
+        except KeyboardInterrupt:
+            print("")
+            return 1
+
+        if not choice:
+            continue
+
+        lowered = choice.lower()
+        if lowered in {"q", "quit", "exit"}:
+            return 0
+        if lowered in {"n", "new"}:
+            _handle_login_new_account(client_id, no_browser, verbose)
+            continue
+        if lowered in {"d", "del", "delete"}:
+            _handle_remove_account(rows)
+            continue
+        if lowered in {"r", "rename"}:
+            _handle_rename_account(rows)
+            continue
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(rows):
+                slug = rows[idx - 1]["slug"]
+                set_active_account_slug(slug)
+                eprint(f"Active account set to '{rows[idx - 1]['label']}'.")
+            else:
+                eprint("Selection out of range.")
+            continue
+
+        eprint("Unrecognized option. Enter a number, 'n', 'd', 'r', or 'q'.")
+        continue
 
 
 def cmd_serve(
@@ -375,37 +631,54 @@ def main() -> None:
         if getattr(args, "json", False):
             print(json.dumps(auth or {}, indent=2))
             sys.exit(0)
-        access_token, account_id, id_token = load_chatgpt_tokens()
-        if not access_token or not id_token:
-            print("👤 Account")
-            print("  • Not signed in")
-            print("  • Run: python3 chatmock.py login")
+
+        # Refresh active account tokens to keep metadata up to date.
+        load_chatgpt_tokens()
+
+        rows = _collect_accounts_state()
+        active_slug = get_active_account_slug()
+
+        if not rows:
+            print("📂 Accounts")
+            print("  • No accounts stored. Run: python3 chatmock.py login")
             print("")
-            _print_usage_limits_block()
             sys.exit(0)
 
-        id_claims = parse_jwt_claims(id_token) or {}
-        access_claims = parse_jwt_claims(access_token) or {}
+        print("📂 Accounts")
+        for row in rows:
+            slug = row["slug"]
+            marker = "[ACTIVE]" if slug == active_slug else "         "
 
-        email = id_claims.get("email") or id_claims.get("preferred_username") or "<unknown>"
-        plan_raw = (access_claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type") or "unknown"
-        plan_map = {
-            "plus": "Plus",
-            "pro": "Pro",
-            "free": "Free",
-            "team": "Team",
-            "enterprise": "Enterprise",
-        }
-        plan = plan_map.get(str(plan_raw).lower(), str(plan_raw).title() if isinstance(plan_raw, str) else "Unknown")
+            email = row.get("email")
+            plan_raw = row.get("plan")
+            if not email or not plan_raw:
+                auth_data = read_auth_file(account_slug=slug) or {}
+                tokens = auth_data.get("tokens") if isinstance(auth_data.get("tokens"), dict) else {}
+                token_email, token_plan = _profile_from_tokens(
+                    tokens.get("access_token"),
+                    tokens.get("id_token"),
+                )
+                email = email or token_email
+                plan_raw = plan_raw or token_plan
 
-        print("👤 Account")
-        print("  • Signed in with ChatGPT")
-        print(f"  • Login: {email}")
-        print(f"  • Plan: {plan}")
-        if account_id:
-            print(f"  • Account ID: {account_id}")
-        print("")
-        _print_usage_limits_block()
+            plan_display = _plan_label(plan_raw)
+            label = row.get("label") or email or slug
+
+            print(f"  {marker} {label} ({plan_display})")
+            if email:
+                print(f"    Email: {email}")
+            if row.get("account_id"):
+                print(f"    Account ID: {row['account_id']}")
+            if row.get("last_used"):
+                print(f"    Last used: {row['last_used']}")
+
+            usage_lines = row.get("usage_lines") or ["    Usage: no data recorded yet."]
+            for line in usage_lines:
+                print(line)
+            print("")
+
+        print("  [ACTIVE] indicates the active account.")
+        print("Accounts rotate automatically when limits are reached.")
         sys.exit(0)
     else:
         parser.error("Unknown command")

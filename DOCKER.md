@@ -2,19 +2,19 @@
 
 ## Quick Start
 1) Setup env:
-   cp .env.example .env
+   `cp .env.example .env`
 
 2) Build the image:
-   docker compose build
+   `docker compose build`
 
 3) Login:
-   docker compose run --rm --service-ports chatmock-login login
+   `docker compose run --rm --service-ports chatmock-login login`
    - The command prints an auth URL, copy paste it into your browser.
    - If your browser cannot reach the container's localhost callback, copy the full redirect URL from the browser address bar and paste it back into the terminal when prompted.
    - Server should stop automatically once it receives the tokens and they are saved.
 
 4) Start the server:
-   docker compose up -d chatmock
+   `docker compose up -d chatmock`
 
 5) Free to use it in whichever chat app you like!
 
@@ -27,6 +27,7 @@ Set options in `.env` or pass environment variables:
 - `CHATGPT_LOCAL_REASONING_COMPAT`: legacy|o3|think-tags|current
 - `CHATGPT_LOCAL_DEBUG_MODEL`: force model override (e.g., `gpt-5`)
 - `CHATGPT_LOCAL_CLIENT_ID`: OAuth client id override (rarely needed)
+- `OPENAI_API_KEY`: The original api key for embedding and api key verification.
 
 ## Logs
 Set `VERBOSE=true` to include extra logging for debugging issues in upstream or chat app requests. Please include and use these logs when submitting bug reports.

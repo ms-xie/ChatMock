@@ -8,10 +8,14 @@ from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .http import build_cors_headers
 from .routes_openai import openai_bp
 from .routes_ollama import ollama_bp
-from .utils import eprint, get_home_dir, load_chatgpt_tokens, parse_jwt_claims, read_auth_file
-from .limits import RateLimitWindow, compute_reset_at, load_rate_limit_snapshot
-
-from dataclasses import asdict
+from .utils import (
+    eprint,
+    get_home_dir,
+    get_active_account_slug,
+    load_chatgpt_tokens,
+    read_auth_file,
+)
+from typing import Any
 
 def _load_expected_api_key() -> str | None:
     env_key = os.getenv("OPENAI_API_KEY")
@@ -113,58 +117,59 @@ def create_app(
 
     @app.get("/usage_info")
     def usage_info():
-        from .cli import _print_usage_limits_block
-        access_token, account_id, id_token = load_chatgpt_tokens()
-        if not access_token or not id_token:
-            print("👤 Account")
-            print("  • Not signed in")
-            print("  • Run: python3 chatmock.py login")
-            print("")
-            _print_usage_limits_block()
-            return jsonify({
-                "usage_info": {
-                    "Login": "Not signed in. Run: `python3 chatmock.py login`"
+        from .cli import _collect_accounts_state, _plan_label, _profile_from_tokens
+
+        load_chatgpt_tokens()
+        accounts = _collect_accounts_state()
+        active_slug = get_active_account_slug()
+
+        if not accounts:
+            return jsonify(
+                {
+                    "active": None,
+                    "accounts": [],
+                    "message": "No accounts stored. Run: python3 chatmock.py login",
                 }
-            })
+            )
 
-        id_claims = parse_jwt_claims(id_token) or {}
-        access_claims = parse_jwt_claims(access_token) or {}
+        payload: list[dict[str, Any]] = []
+        for row in accounts:
+            slug = row["slug"]
+            email = row.get("email")
+            plan_raw = row.get("plan")
 
-        email = id_claims.get("email") or id_claims.get("preferred_username") or "<unknown>"
-        plan_raw = (access_claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type") or "unknown"
-        plan_map = {
-            "plus": "Plus",
-            "pro": "Pro",
-            "free": "Free",
-            "team": "Team",
-            "enterprise": "Enterprise",
-        }
-        plan = plan_map.get(str(plan_raw).lower(), str(plan_raw).title() if isinstance(plan_raw, str) else "Unknown")
+            if not email or not plan_raw:
+                auth_data = read_auth_file(account_slug=slug) or {}
+                tokens = auth_data.get("tokens") if isinstance(auth_data.get("tokens"), dict) else {}
+                token_email, token_plan = _profile_from_tokens(
+                    tokens.get("access_token"),
+                    tokens.get("id_token"),
+                )
+                email = email or token_email
+                plan_raw = plan_raw or token_plan
 
-        print("👤 Account")
-        print("  • Signed in with ChatGPT")
-        print(f"  • Login: {email}")
-        print(f"  • Plan: {plan}")
-        if account_id:
-            print(f"  • Account ID: {account_id}")
-        print("")
-        stored, cache_lines = _print_usage_limits_block()
+            payload.append(
+                {
+                    "slug": slug,
+                    "label": row.get("label") or email or slug,
+                    "email": email,
+                    "plan": plan_raw,
+                    "plan_display": _plan_label(plan_raw),
+                    "account_id": row.get("account_id"),
+                    "last_used": row.get("last_used"),
+                    "active": slug == active_slug,
+                    "usage": row.get("usage"),
+                    "usage_lines": row.get("usage_lines"),
+                }
+            )
 
-        output_dict = {
-            "👤 Account": {
-                "Login": f"{email}",
-                "Plan": f'{plan}',
-            },
-            'window': {}
-        }
-        output_dict.update(asdict(stored))
-        
-        for i, l in enumerate(cache_lines):
-            output_dict['window'][f'line_{i+1}'] = l
-        
-        if account_id:
-            output_dict['👤 Account']['Account ID'] = f'{account_id}'
-        return jsonify(output_dict)
+        return jsonify(
+            {
+                "active": active_slug,
+                "accounts": payload,
+                "notes": ["Accounts rotate automatically when limits are reached."],
+            }
+        )
 
 
     @app.after_request

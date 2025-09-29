@@ -5,7 +5,9 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import secrets
+import shutil
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,19 +16,233 @@ import requests
 from .config import CLIENT_ID_DEFAULT, OAUTH_TOKEN_URL
 
 
+_ACCOUNTS_DIR_NAME = "accounts"
+_ACCOUNTS_STATE_FILE = "accounts.json"
+
+
 def eprint(*args, **kwargs) -> None:
     print(*args, file=sys.stderr, **kwargs)
 
 
-def get_home_dir() -> str:
+def _base_storage_dir() -> str:
     home = os.getenv("CHATGPT_LOCAL_HOME") or os.getenv("CODEX_HOME")
     if not home:
         home = os.path.expanduser("~/.chatgpt-local")
     return home
 
 
-def read_auth_file() -> Dict[str, Any] | None:
+def get_accounts_base_dir(ensure_exists: bool = False) -> str:
+    base = _base_storage_dir()
+    if ensure_exists:
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception:
+            pass
+    return base
+
+
+def _accounts_root(ensure_exists: bool = False) -> str:
+    root = os.path.join(get_accounts_base_dir(ensure_exists=ensure_exists), _ACCOUNTS_DIR_NAME)
+    if ensure_exists:
+        try:
+            os.makedirs(root, exist_ok=True)
+        except Exception:
+            pass
+    return root
+
+
+def _accounts_state_path() -> str:
+    return os.path.join(get_accounts_base_dir(ensure_exists=False), _ACCOUNTS_STATE_FILE)
+
+
+def _load_accounts_state() -> Dict[str, Any]:
+    path = _accounts_state_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            raw = json.load(fp)
+    except FileNotFoundError:
+        return {"active": None, "accounts": {}}
+    except Exception:
+        return {"active": None, "accounts": {}}
+
+    accounts: Dict[str, Dict[str, Any]] = {}
+    raw_accounts = raw.get("accounts") if isinstance(raw, dict) else None
+    if isinstance(raw_accounts, dict):
+        for slug, meta in raw_accounts.items():
+            if not isinstance(slug, str) or not slug:
+                continue
+            if isinstance(meta, dict):
+                accounts[slug] = meta
+    active = raw.get("active") if isinstance(raw, dict) else None
+    if not isinstance(active, str) or active not in accounts:
+        active = None
+    return {"active": active, "accounts": accounts}
+
+
+def _write_accounts_state(state: Dict[str, Any]) -> None:
+    base = get_accounts_base_dir(ensure_exists=True)
+    path = os.path.join(base, _ACCOUNTS_STATE_FILE)
+    payload = {
+        "active": state.get("active"),
+        "accounts": state.get("accounts", {}),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as fp:
+            if hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(fp.fileno(), 0o600)
+                except OSError:
+                    pass
+            json.dump(payload, fp, indent=2)
+    except Exception as exc:
+        eprint(f"ERROR: unable to persist accounts state ({exc})")
+
+
+def _normalize_account_slug(identifier: Optional[str]) -> str:
+    if not isinstance(identifier, str):
+        return ""
+    slug = re.sub(r"[^a-z0-9]+", "-", identifier.lower()).strip("-")
+    return slug
+
+
+def ensure_unique_account_slug(preferred: Optional[str] = None) -> str:
+    base_slug = _normalize_account_slug(preferred)
+    if not base_slug:
+        base_slug = "account"
+    state = _load_accounts_state()
+    existing = set(state.get("accounts", {}).keys())
+    slug = base_slug
+    counter = 2
+    while slug in existing:
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+    return slug
+
+
+def list_known_accounts() -> List[Dict[str, Any]]:
+    state = _load_accounts_state()
+    accounts: List[Dict[str, Any]] = []
+    for slug, meta in state.get("accounts", {}).items():
+        if not isinstance(slug, str) or not slug:
+            continue
+        entry = {"slug": slug}
+        if isinstance(meta, dict):
+            entry.update(meta)
+        accounts.append(entry)
+    accounts.sort(key=lambda item: item.get("label") or item["slug"])
+    return accounts
+
+
+def get_active_account_slug() -> Optional[str]:
+    state = _load_accounts_state()
+    active = state.get("active")
+    if isinstance(active, str) and active in state.get("accounts", {}):
+        return active
+    return None
+
+
+def set_active_account_slug(slug: Optional[str]) -> None:
+    state = _load_accounts_state()
+    accounts = dict(state.get("accounts", {}))
+    if slug is None:
+        state["active"] = None
+    else:
+        normalized = slug.strip()
+        if normalized:
+            now = _now_iso8601()
+            meta = dict(accounts.get(normalized) or {})
+            if not meta.get("created_at"):
+                meta["created_at"] = now
+            meta["last_used"] = now
+            meta["updated_at"] = now
+            if not meta.get("label"):
+                meta["label"] = normalized
+            accounts[normalized] = meta
+            state["active"] = normalized
+        else:
+            state["active"] = None
+    state["accounts"] = accounts
+    _write_accounts_state(state)
+
+
+def update_account_metadata(slug: str, **fields: Any) -> Dict[str, Any]:
+    normalized = (slug or "").strip()
+    if not normalized:
+        raise ValueError("account slug is required")
+    state = _load_accounts_state()
+    accounts = dict(state.get("accounts", {}))
+    meta = dict(accounts.get(normalized) or {})
+    now = _now_iso8601()
+    changed = False
+    if not meta.get("created_at"):
+        meta["created_at"] = now
+        changed = True
+    if not meta.get("label"):
+        meta["label"] = normalized
+        changed = True
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if meta.get(key) != value:
+            meta[key] = value
+            changed = True
+    if changed:
+        meta["updated_at"] = now
+    accounts[normalized] = meta
+    state["accounts"] = accounts
+    _write_accounts_state(state)
+    return meta
+
+
+def remove_account(slug: str) -> bool:
+    normalized = (slug or "").strip()
+    if not normalized:
+        return False
+    state = _load_accounts_state()
+    accounts = dict(state.get("accounts", {}))
+    removed = accounts.pop(normalized, None) is not None
+    if state.get("active") == normalized:
+        state["active"] = None
+    state["accounts"] = accounts
+    _write_accounts_state(state)
+    directory = os.path.join(_accounts_root(ensure_exists=False), normalized)
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        eprint(f"WARNING: unable to fully remove account '{normalized}': {exc}")
+    return removed
+
+
+def get_account_directory(slug: str, ensure_exists: bool = False) -> str:
+    normalized = (slug or "").strip()
+    if not normalized:
+        return get_accounts_base_dir(ensure_exists=ensure_exists)
+    path = os.path.join(_accounts_root(ensure_exists=ensure_exists), normalized)
+    if ensure_exists:
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception:
+            pass
+    return path
+
+
+def get_home_dir(account_slug: Optional[str] = None, ensure_exists: bool = False) -> str:
+    slug = account_slug or get_active_account_slug()
+    if slug:
+        return get_account_directory(slug, ensure_exists=ensure_exists)
+    return get_accounts_base_dir(ensure_exists=ensure_exists)
+
+
+def read_auth_file(account_slug: Optional[str] = None) -> Dict[str, Any] | None:
+    candidate_paths: List[str] = []
+    slug = account_slug or get_active_account_slug()
+    if slug:
+        account_path = os.path.join(get_account_directory(slug, ensure_exists=False), "auth.json")
+        candidate_paths.append(account_path)
     for base in [
+        get_accounts_base_dir(ensure_exists=False),
         os.getenv("CHATGPT_LOCAL_HOME"),
         os.getenv("CODEX_HOME"),
         os.path.expanduser("~/.chatgpt-local"),
@@ -35,6 +251,9 @@ def read_auth_file() -> Dict[str, Any] | None:
         if not base:
             continue
         path = os.path.join(base, "auth.json")
+        if path not in candidate_paths:
+            candidate_paths.append(path)
+    for path in candidate_paths:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -45,19 +264,20 @@ def read_auth_file() -> Dict[str, Any] | None:
     return None
 
 
-def write_auth_file(auth: Dict[str, Any]) -> bool:
-    home = get_home_dir()
-    try:
-        os.makedirs(home, exist_ok=True)
-    except Exception as exc:
-        eprint(f"ERROR: unable to create auth home directory {home}: {exc}")
-        return False
+def write_auth_file(auth: Dict[str, Any], account_slug: Optional[str] = None) -> bool:
+    slug = account_slug or get_active_account_slug()
+    if slug:
+        home = get_account_directory(slug, ensure_exists=True)
+    else:
+        home = get_accounts_base_dir(ensure_exists=True)
     path = os.path.join(home, "auth.json")
     try:
         with open(path, "w", encoding="utf-8") as fp:
             if hasattr(os, "fchmod"):
                 os.fchmod(fp.fileno(), 0o600)
             json.dump(auth, fp, indent=2)
+        if slug:
+            update_account_metadata(slug, last_used=_now_iso8601())
         return True
     except Exception as exc:
         eprint(f"ERROR: unable to write auth file: {exc}")
@@ -226,10 +446,136 @@ def convert_tools_chat_to_responses(tools: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, str | None, str | None]:
-    auth = read_auth_file()
+def _account_limit_reached(slug: str) -> bool:
+    if not isinstance(slug, str) or not slug:
+        return False
+    try:
+        from .limits import load_rate_limit_snapshot  # noqa: WPS433
+    except Exception:
+        return False
+    snapshot = load_rate_limit_snapshot(account_slug=slug)
+    if snapshot is None:
+        return False
+    windows = []
+    if snapshot.snapshot.primary is not None:
+        windows.append(snapshot.snapshot.primary)
+    if snapshot.snapshot.secondary is not None:
+        windows.append(snapshot.snapshot.secondary)
+    for window in windows:
+        try:
+            used = float(window.used_percent)
+        except (TypeError, ValueError):
+            continue
+        if used >= 100.0:
+            return True
+    return False
+
+
+def _select_account_with_capacity(preferred: Optional[str]) -> Optional[str]:
+    known = list_known_accounts()
+    order: List[str] = []
+    if isinstance(preferred, str) and preferred:
+        order.append(preferred)
+    for entry in known:
+        slug = entry.get("slug") if isinstance(entry, dict) else None
+        if isinstance(slug, str) and slug and slug not in order:
+            order.append(slug)
+    for slug in order:
+        if slug and not _account_limit_reached(slug):
+            return slug
+    return order[0] if order else preferred
+
+
+def _extract_account_profile(
+    id_token: Optional[str],
+    access_token: Optional[str],
+) -> Dict[str, Optional[str]]:
+    profile: Dict[str, Optional[str]] = {"email": None, "plan": None}
+    id_claims = parse_jwt_claims(id_token) or {}
+    if isinstance(id_claims, dict):
+        for key in ("email", "preferred_username", "name", "sub"):
+            value = id_claims.get(key)
+            if isinstance(value, str) and value:
+                profile["email"] = value
+                break
+    access_claims = parse_jwt_claims(access_token) or {}
+    plan_raw = None
+    if isinstance(access_claims, dict):
+        auth_claims = access_claims.get("https://api.openai.com/auth")
+        if isinstance(auth_claims, dict):
+            plan_raw = auth_claims.get("chatgpt_plan_type")
+    if isinstance(plan_raw, str) and plan_raw:
+        profile["plan"] = plan_raw
+    elif plan_raw is not None:
+        profile["plan"] = str(plan_raw)
+    return profile
+
+
+def _bootstrap_account_from_auth(auth: Dict[str, Any]) -> Optional[str]:
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    id_token = tokens.get("id_token") if isinstance(tokens, dict) else None
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    account_id = tokens.get("account_id") if isinstance(tokens, dict) else None
+    if not isinstance(account_id, str) or not account_id:
+        account_id = _derive_account_id(id_token)
+
+    profile = _extract_account_profile(id_token, access_token)
+    slug_seed = profile.get("email") or account_id or "account"
+    slug = ensure_unique_account_slug(slug_seed)
+    if not write_auth_file(auth, account_slug=slug):
+        return None
+
+    label = profile.get("email") or slug
+    update_account_metadata(
+        slug,
+        label=label,
+        email=profile.get("email"),
+        plan=profile.get("plan"),
+        account_id=account_id,
+    )
+
+    legacy_limits = os.path.join(get_accounts_base_dir(ensure_exists=False), "usage_limits.json")
+    if os.path.isfile(legacy_limits):
+        destination = os.path.join(get_account_directory(slug, ensure_exists=True), "usage_limits.json")
+        if not os.path.exists(destination):
+            try:
+                shutil.copy2(legacy_limits, destination)
+            except Exception:
+                pass
+    return slug
+
+
+def load_chatgpt_tokens(
+    ensure_fresh: bool = True,
+    account_slug: Optional[str] = None,
+) -> tuple[str | None, str | None, str | None]:
+    requested_slug = (account_slug or "").strip() or None
+    active = get_active_account_slug()
+    slug = requested_slug or active
+
+    if not slug:
+        known = list_known_accounts()
+        if known:
+            slug = known[0]["slug"]
+
+    if requested_slug is None and slug:
+        candidate = _select_account_with_capacity(slug)
+        if candidate:
+            slug = candidate
+
+    if slug and slug != active and requested_slug is None:
+        set_active_account_slug(slug)
+        active = slug
+
+    auth = read_auth_file(account_slug=slug)
     if not isinstance(auth, dict):
         return None, None, None
+
+    if slug is None:
+        slug = _bootstrap_account_from_auth(auth)
+        if slug:
+            set_active_account_slug(slug)
+            auth = read_auth_file(account_slug=slug) or auth
 
     tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
     access_token: Optional[str] = tokens.get("access_token")
@@ -258,7 +604,7 @@ def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, str | No
                 if isinstance(account_id, str) and account_id:
                     updated_tokens["account_id"] = account_id
 
-                persisted = _persist_refreshed_auth(auth, updated_tokens)
+                persisted = _persist_refreshed_auth(auth, updated_tokens, account_slug=slug)
                 if persisted is not None:
                     auth, tokens = persisted
                 else:
@@ -266,6 +612,18 @@ def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, str | No
 
     if not isinstance(account_id, str) or not account_id:
         account_id = _derive_account_id(id_token)
+
+    if slug:
+        profile = _extract_account_profile(id_token, access_token)
+        now_iso = _now_iso8601()
+        update_account_metadata(
+            slug,
+            label=profile.get("email") or slug,
+            email=profile.get("email"),
+            plan=profile.get("plan"),
+            account_id=account_id,
+            last_used=now_iso,
+        )
 
     access_token = access_token if isinstance(access_token, str) and access_token else None
     id_token = id_token if isinstance(id_token, str) and id_token else None
@@ -336,11 +694,16 @@ def _refresh_chatgpt_tokens(refresh_token: str, client_id: str) -> Optional[Dict
     }
 
 
-def _persist_refreshed_auth(auth: Dict[str, Any], updated_tokens: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+def _persist_refreshed_auth(
+    auth: Dict[str, Any],
+    updated_tokens: Dict[str, Any],
+    *,
+    account_slug: Optional[str] = None,
+) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
     updated_auth = dict(auth)
     updated_auth["tokens"] = updated_tokens
     updated_auth["last_refresh"] = _now_iso8601()
-    if write_auth_file(updated_auth):
+    if write_auth_file(updated_auth, account_slug=account_slug):
         return updated_auth, updated_tokens
     eprint("ERROR: unable to persist refreshed auth tokens")
     return None
