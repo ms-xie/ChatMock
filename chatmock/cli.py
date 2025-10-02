@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import webbrowser
 from datetime import datetime
 
@@ -268,6 +269,25 @@ def _collect_accounts_state() -> List[Dict[str, Any]]:
     return rows
 
 
+def _usage_signature(rows: List[Dict[str, Any]]) -> tuple:
+    signature: List[tuple[Any, ...]] = []
+    for row in rows:
+        usage = row.get("usage") or {}
+        primary = usage.get("primary") or {}
+        secondary = usage.get("secondary") or {}
+        signature.append(
+            (
+                row.get("slug"),
+                usage.get("captured_at"),
+                primary.get("used_percent"),
+                primary.get("resets_in_seconds"),
+                secondary.get("used_percent"),
+                secondary.get("resets_in_seconds"),
+            )
+        )
+    return tuple(signature)
+
+
 def _print_account_dashboard(rows: List[Dict[str, Any]], active_slug: Optional[str]) -> None:
     print("")
     print("📂 ChatMock Account Manager")
@@ -360,6 +380,58 @@ def _handle_rename_account(rows: List[Dict[str, Any]]) -> bool:
     update_account_metadata(row["slug"], label=new_label)
     eprint(f"Updated label for '{row['label']}' → '{new_label}'.")
     return True
+
+
+def _readline_with_timeout(timeout_seconds: float) -> Optional[str]:
+    if timeout_seconds <= 0:
+        line = sys.stdin.readline()
+        if line == "":
+            raise EOFError
+        return line
+
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        import select  # type: ignore
+    except Exception:  # pragma: no cover - select should be present on POSIX.
+        select = None  # type: ignore
+
+    if select is not None:
+        remaining = timeout_seconds
+        while remaining > 0:
+            ready, _, _ = select.select([sys.stdin], [], [], remaining)
+            if ready:
+                line = sys.stdin.readline()
+                if line == "":
+                    raise EOFError
+                return line
+            remaining = deadline - time.monotonic()
+        return None
+
+    if os.name == "nt":
+        import msvcrt
+
+        buffer: List[str] = []
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    print("")
+                    return "".join(buffer)
+                if ch in ("\b", "\x7f"):
+                    if buffer:
+                        buffer.pop()
+                        msvcrt.putwch("\b")
+                        msvcrt.putwch(" ")
+                        msvcrt.putwch("\b")
+                    continue
+                buffer.append(ch)
+                msvcrt.putwch(ch)
+            else:
+                time.sleep(0.05)
+        return None
+
+    time.sleep(max(0.0, deadline - time.monotonic()))
+    return None
 
 
 def _handle_login_new_account(client_id: str, no_browser: bool, verbose: bool) -> bool:
@@ -482,19 +554,42 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
         eprint("ERROR: No OAuth client id configured. Set CHATGPT_LOCAL_CLIENT_ID.")
         return 1
 
+    auto_refresh_seconds = 10.0
+    last_signature: Optional[tuple] = None
+    prompt_visible = False
+    force_render = True
+
     while True:
         rows = _collect_accounts_state()
         active_slug = get_active_account_slug()
-        _print_account_dashboard(rows, active_slug)
+        signature = _usage_signature(rows)
+
+        if force_render or signature != last_signature:
+            if prompt_visible:
+                print("")
+                prompt_visible = False
+            _print_account_dashboard(rows, active_slug)
+            last_signature = signature
+            force_render = False
+
+        if not prompt_visible:
+            print("Selection: ", end="", flush=True)
+            prompt_visible = True
 
         try:
-            choice = input("Selection: ").strip()
+            choice_raw = _readline_with_timeout(auto_refresh_seconds)
         except EOFError:
             print("")
             return 0
         except KeyboardInterrupt:
             print("")
             return 1
+
+        if choice_raw is None:
+            continue
+
+        prompt_visible = False
+        choice = choice_raw.strip()
 
         if not choice:
             continue
@@ -504,12 +599,15 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
             return 0
         if lowered in {"n", "new"}:
             _handle_login_new_account(client_id, no_browser, verbose)
+            force_render = True
             continue
         if lowered in {"d", "del", "delete"}:
             _handle_remove_account(rows)
+            force_render = True
             continue
         if lowered in {"r", "rename"}:
             _handle_rename_account(rows)
+            force_render = True
             continue
         if choice.isdigit():
             idx = int(choice)
@@ -517,6 +615,7 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
                 slug = rows[idx - 1]["slug"]
                 set_active_account_slug(slug)
                 eprint(f"Active account set to '{rows[idx - 1]['label']}'.")
+                force_render = True
             else:
                 eprint("Selection out of range.")
             continue
