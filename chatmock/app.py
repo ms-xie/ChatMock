@@ -6,7 +6,7 @@ from flask import Flask, jsonify, make_response, request
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .http import build_cors_headers
-from .routes_openai import openai_bp
+from .routes_openai import openai_bp, API_KEY_CUSTOM_SUFFIX
 from .routes_ollama import ollama_bp
 from .utils import (
     eprint,
@@ -20,13 +20,15 @@ from typing import Any
 def _load_expected_api_key() -> str | None:
     env_key = os.getenv("OPENAI_API_KEY")
     if isinstance(env_key, str) and env_key.strip():
-        return env_key.strip()
+        env_key = env_key.strip()
+        return env_key.strip(API_KEY_CUSTOM_SUFFIX) + API_KEY_CUSTOM_SUFFIX
 
     auth = read_auth_file()
     if isinstance(auth, dict):
         stored_key = auth.get("OPENAI_API_KEY")
         if isinstance(stored_key, str) and stored_key.strip():
-            return stored_key.strip()
+            stored_key = stored_key.strip()
+            return stored_key.strip(API_KEY_CUSTOM_SUFFIX) + API_KEY_CUSTOM_SUFFIX
     return None
 
 
@@ -98,6 +100,13 @@ def create_app(
         presented_key = _extract_presented_api_key()
         if not isinstance(presented_key, str) or not presented_key:
             resp = make_response(jsonify({"error": {"message": "Missing API key"}}), 401)
+            resp.headers.setdefault("WWW-Authenticate", "Bearer")
+            for k, v in build_cors_headers().items():
+                resp.headers.setdefault(k, v)
+            return resp
+
+        if not presented_key.endswith(API_KEY_CUSTOM_SUFFIX):
+            resp = make_response(jsonify({"error": {"message": "Invalid API key"}}), 403)
             resp.headers.setdefault("WWW-Authenticate", "Bearer")
             for k, v in build_cors_headers().items():
                 resp.headers.setdefault(k, v)

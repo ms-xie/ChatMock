@@ -20,7 +20,7 @@ from .utils import (
     sse_translate_text,
 )
 
-
+API_KEY_CUSTOM_SUFFIX = os.environ.get("API_KEY_CUSTOM_SUFFIX", "-chatmock")
 openai_bp = Blueprint("openai", __name__)
 
 
@@ -605,7 +605,7 @@ def responses() -> Response:
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
     extra_payload: Dict[str, Any] = {}
     for key in (
-        "max_output_tokens",
+        # "max_output_tokens",
         "max_tool_calls",
         "temperature",
         "top_p",
@@ -621,6 +621,13 @@ def responses() -> Response:
         extra_payload["metadata"] = metadata
     if isinstance(stream_options, dict) and stream_options:
         extra_payload["stream_options"] = stream_options
+
+    extra_payload_ignore: Dict[str, Any] = {}
+    for key in (
+        "max_output_tokens",
+    ):
+        if key in payload:
+            extra_payload_ignore[key] = payload.get(key)
 
     model_reasoning = extract_reasoning_from_model_name(requested_model)
     reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
@@ -643,8 +650,8 @@ def responses() -> Response:
             if k not in reasoning_param and v is not None:
                 reasoning_param[k] = v
 
-    if extra_payload:
-        print(f'This is not official response endpoint, these parameter will ignore:\n{extra_payload}\n')
+    if extra_payload_ignore:
+        print(f'This is not official response endpoint, these parameter will ignore:\n{extra_payload_ignore}\n')
 
     upstream, error_resp = start_upstream_request(
         model,
@@ -656,7 +663,7 @@ def responses() -> Response:
         reasoning_param=reasoning_param,
         include=include_values,
         store=store_flag,
-        # extra_payload=extra_payload,
+        extra_payload=extra_payload,
     )
     if error_resp is not None:
         return error_resp
@@ -940,6 +947,9 @@ def embeddings() -> Response:
     if not isinstance(api_key, str) or not api_key.strip():
         env_key = os.getenv("OPENAI_API_KEY")
         api_key = env_key.strip() if isinstance(env_key, str) else ""
+    
+    api_key = api_key.strip(API_KEY_CUSTOM_SUFFIX)
+    
     if not api_key:
         resp = make_response(jsonify({"error": {"message": "Server missing OpenAI API key"}}), 500)
         for k, v in build_cors_headers().items():

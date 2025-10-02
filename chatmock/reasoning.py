@@ -107,7 +107,7 @@ def extract_last_query(input_items):
     user_input = None
     for i in range(len(input_items)-1, -1, -1):
         item = input_items[i]
-        if item['role'] == 'user':
+        if item.get('role') == 'user':
             for j in range(len(item["content"])-1, -1, -1):
                 if item["content"][j]["type"] == "input_text":
                     user_input = item["content"][j]['text']
@@ -117,7 +117,7 @@ def extract_last_query(input_items):
 
 def clean_reasoning_tag_in_query(input_items):
     for item in input_items:
-        if item['role'] == 'user':
+        if item.get('role') == 'user':
             for content in item["content"]:
                 if content["type"] == "input_text":
                     content['text'] = re.sub(r"#([LMH])\b", "", content['text'], flags=re.IGNORECASE).strip()

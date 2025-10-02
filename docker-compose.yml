@@ -21,6 +21,8 @@ services:
       "CMD-SHELL",
       "python -c \"import urllib.request,os,sys; \
 api_key=os.environ.get('OPENAI_API_KEY'); \
+suffix=os.environ.get('API_KEY_CUSTOM_SUFFIX'); \
+api_key=api_key.strip(suffix) + suffix if api_key else ''; \
 req=urllib.request.Request('http://127.0.0.1:8000/health', headers={'Authorization': f'Bearer {api_key}'}); \
 sys.exit(0 if urllib.request.urlopen(req).status==200 else 1)\""]
       interval: 10s

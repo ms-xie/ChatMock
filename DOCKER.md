@@ -28,6 +28,7 @@ Set options in `.env` or pass environment variables:
 - `CHATGPT_LOCAL_DEBUG_MODEL`: force model override (e.g., `gpt-5`)
 - `CHATGPT_LOCAL_CLIENT_ID`: OAuth client id override (rarely needed)
 - `OPENAI_API_KEY`: The original api key for embedding and api key verification.
+- `API_KEY_CUSTOM_SUFFIX`
 
 ## Logs
 Set `VERBOSE=true` to include extra logging for debugging issues in upstream or chat app requests. Please include and use these logs when submitting bug reports.
