@@ -21,6 +21,7 @@ from .utils import (
 )
 
 API_KEY_CUSTOM_SUFFIX = os.environ.get("API_KEY_CUSTOM_SUFFIX", "-chatmock")
+EMBEDDINGS_ENDPOINT = os.environ.get("OPENAI_EMBEDDINGS_ENDPOINT", "").strip() or "https://api.openai.com/v1/embeddings"
 openai_bp = Blueprint("openai", __name__)
 
 
@@ -978,7 +979,7 @@ def embeddings() -> Response:
 
     try:
         upstream = requests.post(
-            "https://api.openai.com/v1/embeddings",
+            EMBEDDINGS_ENDPOINT,
             headers=upstream_headers,
             data=raw_body,
             timeout=120,
