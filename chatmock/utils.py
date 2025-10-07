@@ -471,6 +471,34 @@ def _account_limit_reached(slug: str) -> bool:
     return False
 
 
+def _secondary_reset_eta_seconds(slug: str) -> Optional[float]:
+    if not isinstance(slug, str) or not slug:
+        return None
+    try:
+        from .limits import compute_reset_at, load_rate_limit_snapshot  # noqa: WPS433
+    except Exception:
+        return None
+
+    snapshot = load_rate_limit_snapshot(account_slug=slug)
+    if snapshot is None or snapshot.snapshot.secondary is None:
+        return None
+
+    window = snapshot.snapshot.secondary
+    reset_at = compute_reset_at(snapshot.captured_at, window)
+    if reset_at is None:
+        if window.resets_in_seconds is None:
+            return None
+        return float(window.resets_in_seconds)
+
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    eta = (reset_at - now).total_seconds()
+    if eta < 0:
+        return 0.0
+    return eta
+
+
 def _select_account_with_capacity(preferred: Optional[str]) -> Optional[str]:
     known = list_known_accounts()
     order: List[str] = []
@@ -480,9 +508,23 @@ def _select_account_with_capacity(preferred: Optional[str]) -> Optional[str]:
         slug = entry.get("slug") if isinstance(entry, dict) else None
         if isinstance(slug, str) and slug and slug not in order:
             order.append(slug)
+    index_by_slug = {slug: idx for idx, slug in enumerate(order)}
+    candidates: List[Tuple[str, Optional[float]]] = []
     for slug in order:
         if slug and not _account_limit_reached(slug):
-            return slug
+            eta = _secondary_reset_eta_seconds(slug)
+            candidates.append((slug, eta))
+    if candidates:
+        def _candidate_key(item: Tuple[str, Optional[float]]) -> Tuple[int, float, float]:
+            slug, eta = item
+            # Prefer accounts with no recent usage snapshot (eta is None) to gather data early.
+            has_snapshot = 1 if eta is not None else 0
+            eta_value = float(eta) if eta is not None else 0.0
+            fallback_index = float(index_by_slug.get(slug, float("inf")))
+            return (has_snapshot, eta_value, fallback_index)
+
+        candidates.sort(key=_candidate_key)
+        return candidates[0][0]
     return order[0] if order else preferred
 
 
