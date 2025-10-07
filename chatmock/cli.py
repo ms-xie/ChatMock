@@ -200,7 +200,7 @@ def _format_account_usage(snapshot: Optional[StoredRateLimitSnapshot]) -> tuple[
     if snapshot.snapshot.primary is not None:
         windows.append(("⚡", "5 hour limit", snapshot.snapshot.primary))
     if snapshot.snapshot.secondary is not None:
-        windows.append(("📅", "Weekly limit", snapshot.snapshot.secondary))
+        windows.append(("📅 ", "Weekly limit", snapshot.snapshot.secondary))
 
     if not windows:
         lines.append("    Usage data available but no limit windows provided.")

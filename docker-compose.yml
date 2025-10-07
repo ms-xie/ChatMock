@@ -48,7 +48,6 @@ sys.exit(0 if urllib.request.urlopen(req).status==200 else 1)\""]
     image: tailscale/tailscale:latest
     container_name: tailscaled
     hostname: chatmock-server # The hostname that will appear in your Tailscale admin panel.
-    env_file: .env # For sourcing the TS_AUTHKEY
     environment:
       - TS_STATE_DIR=/var/lib/tailscale
       # This command sequence starts the daemon, waits for it to be ready,
