@@ -7,8 +7,10 @@
 
 - `/v1/responses` endpoint fully compatible with the Codex VS Code extension.
 - Multi-account vault with automatic selection and rotation to spread usage across sessions.
-- Terminal UI for browsing, selecting, and managing stored accounts without stop main proxy server.
+- Terminal UI for browsing, selecting, and managing stored accounts without stopping the main proxy server.
 - Built-in Tailscale sidecar to expose ChatMock securely across your Tailnet.
+- `/v1/embeddings` routing configurable between OpenAI and custom embedding backends.
+- Per-request reasoning control via inline effort tags or CLI flags.
 
 ## Requirements
 
