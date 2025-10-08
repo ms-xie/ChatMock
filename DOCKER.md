@@ -2,6 +2,11 @@
 
 ## Prepare
 
+- Git clone this repo and `cd` into it.
+  ```
+  git clone https://github.com/ms-xie/ChatMock.git
+  cd ChatMock
+  ```
 - Copy the env template once: `cp .env.example .env`.
 - Fill in `OPENAI_API_KEY`, `API_KEY_CUSTOM_SUFFIX`, and any reasoning defaults you need.
 - Build or rebuild images whenever dependencies change: `docker compose build`.
@@ -63,4 +68,3 @@
 ## Shut Down
 
 - Stop everything: `docker compose down`.
-- Remove volumes when you need a clean slate: `docker compose down -v` (tokens and logs are wiped).
