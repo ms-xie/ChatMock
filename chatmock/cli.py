@@ -200,7 +200,7 @@ def _format_account_usage(snapshot: Optional[StoredRateLimitSnapshot]) -> tuple[
     if snapshot.snapshot.primary is not None:
         windows.append(("⚡", "5 hour limit", snapshot.snapshot.primary))
     if snapshot.snapshot.secondary is not None:
-        windows.append(("📅 ", "Weekly limit", snapshot.snapshot.secondary))
+        windows.append(("📅", "Weekly limit", snapshot.snapshot.secondary))
 
     if not windows:
         lines.append("    Usage data available but no limit windows provided.")
@@ -214,7 +214,7 @@ def _format_account_usage(snapshot: Optional[StoredRateLimitSnapshot]) -> tuple[
         reset_color = _reset_color()
         progress = _render_progress_bar(percent_used)
         lines.append(
-            f"    {icon_label} {desc}: {color}{progress}{reset_color} {color}{percent_used:5.1f}% used{reset_color} | {remaining:5.1f}% left"
+            f"    {icon_label}  {desc}: {color}{progress}{reset_color} {color}{percent_used:5.1f}% used{reset_color} | {remaining:5.1f}% left"
         )
         reset_in = _format_reset_duration(window.resets_in_seconds)
         reset_at = compute_reset_at(snapshot.captured_at, window)

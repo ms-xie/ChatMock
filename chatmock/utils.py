@@ -450,7 +450,7 @@ def _account_limit_reached(slug: str) -> bool:
     if not isinstance(slug, str) or not slug:
         return False
     try:
-        from .limits import load_rate_limit_snapshot  # noqa: WPS433
+        from .limits import compute_reset_at, load_rate_limit_snapshot  # noqa: WPS433
     except Exception:
         return False
     snapshot = load_rate_limit_snapshot(account_slug=slug)
@@ -467,6 +467,13 @@ def _account_limit_reached(slug: str) -> bool:
         except (TypeError, ValueError):
             continue
         if used >= 100.0:
+            reset_at = compute_reset_at(snapshot.captured_at, window)
+            if reset_at is not None:
+                if reset_at.tzinfo is None:
+                    reset_at = reset_at.replace(tzinfo=datetime.timezone.utc)
+                now = datetime.datetime.now(datetime.timezone.utc)
+                if reset_at <= now:
+                    continue
             return True
     return False
 
