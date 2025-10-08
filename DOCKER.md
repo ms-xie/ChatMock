@@ -1,42 +1,66 @@
 # Docker Deployment
 
-## Quick Start
-1) Setup env:
-   `cp .env.example .env`
+## Prepare
 
-2) Build the image:
-   `docker compose build`
+- Copy the env template once: `cp .env.example .env`.
+- Fill in `OPENAI_API_KEY`, `API_KEY_CUSTOM_SUFFIX`, and any reasoning defaults you need.
+- Build or rebuild images whenever dependencies change: `docker compose build`.
 
-3) Login:
-   `docker compose run --rm --service-ports chatmock-login login`
-   - The command prints an auth URL, copy paste it into your browser.
-   - If your browser cannot reach the container's localhost callback, copy the full redirect URL from the browser address bar and paste it back into the terminal when prompted.
-   - Server should stop automatically once it receives the tokens and they are saved.
+## Authenticate
 
-4) Start the server:
-   `docker compose up -d chatmock`
+- `chatmock-login` launches a TUI that can add, remove, rename accounts and monitor usage.
+- Start the OAuth helper with published ports:
+  ```
+  docker compose run --rm --service-ports chatmock-login login
+  ```
+- Paste the printed URL into a browser and, if callbacks fail, paste the redirect URL back into the terminal.
+- Re-run the same command anytime you want to rotate stored ChatGPT accounts.
 
-5) Free to use it in whichever chat app you like!
+## Run the Stack
 
-## Configuration
-Set options in `.env` or pass environment variables:
-- `PORT`: Container listening port (default 8000)
-- `VERBOSE`: `true|false` to enable request/stream logs
-- `CHATGPT_LOCAL_REASONING_EFFORT`: minimal|low|medium|high
-- `CHATGPT_LOCAL_REASONING_SUMMARY`: auto|concise|detailed|none
-- `CHATGPT_LOCAL_REASONING_COMPAT`: legacy|o3|think-tags|current
-- `CHATGPT_LOCAL_DEBUG_MODEL`: force model override (e.g., `gpt-5`)
-- `CHATGPT_LOCAL_CLIENT_ID`: OAuth client id override (rarely needed)
-- `OPENAI_API_KEY`: The original api key for embedding and api key verification.
-- `API_KEY_CUSTOM_SUFFIX`
+- Bring up ChatMock (and the `tailscaled` sidecar) in the background: `docker compose up -d chatmock`.
+- Verify the service: `docker compose ps` should list `chatmock` and `tailscaled` as `running`.
+- Hit the API locally: `http://localhost:8000/v1`.
 
-## Logs
-Set `VERBOSE=true` to include extra logging for debugging issues in upstream or chat app requests. Please include and use these logs when submitting bug reports.
+## Remote Access via Tailscale
 
-## Test
+- Ensure the sidecar is authenticated: `docker compose exec tailscaled tailscale up`.
+- Use Tailnet routing or Funnel (disabled by default) to expose ChatMock without opening public ports.
+- Example status check:
+  ```
+  docker compose exec tailscaled tailscale status
+  ```
+- Read the [entrypoint-tailscale.sh](https://github.com/ms-xie/ChatMock/blob/main/docker/entrypoint-tailscale.sh) for detailed.
 
-```
-curl -s http://localhost:8000/v1/chat/completions \
-   -H 'Content-Type: application/json' \
-   -d '{"model":"gpt-5-codex","messages":[{"role":"user","content":"Hello world!"}]}' | jq .
-```
+## Configuration Cheatsheet
+
+- `.env` keys:
+  - `PORT`, `VERBOSE`, `OPENAI_API_KEY`, `API_KEY_CUSTOM_SUFFIX`.
+  - `CHATGPT_LOCAL_REASONING_EFFORT`, `CHATGPT_LOCAL_REASONING_SUMMARY`, `CHATGPT_LOCAL_REASONING_COMPAT`.
+  - `CHATGPT_LOCAL_DEBUG_MODEL`, `CHATGPT_LOCAL_CLIENT_ID`, `CHATGPT_ENABLE_WEB_SEARCH`.
+- Override at runtime with `docker compose run -e KEY=value ...` for ad-hoc tests.
+
+## Usage Tips
+
+- Inline `#L`, `#M`, `#H` tags inside the final user message to force reasoning effort tiers.
+- Select `gpt-5-mini` when you want minimal effort, no reasoning summary, and faster turnarounds.
+- Enable verbose logging for diagnostics:
+  ```
+  VERBOSE=true docker compose up -d chatmock
+  docker compose logs -f chatmock
+  ```
+
+## Smoke Test
+
+- Validate the proxy after startup:
+  ```
+  curl -s http://localhost:8000/v1/responses \
+       -H "Content-Type: application/json" \
+       -d '{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"Hello world #L"}]}]}' \
+       | jq .
+  ```
+
+## Shut Down
+
+- Stop everything: `docker compose down`.
+- Remove volumes when you need a clean slate: `docker compose down -v` (tokens and logs are wiped).

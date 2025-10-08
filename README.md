@@ -1,171 +1,107 @@
-<div align="center">
-  <h1>ChatMock
-  <div align="center">
-<a href="https://github.com/RayBytes/ChatMock/stargazers"><img src="https://img.shields.io/github/stars/RayBytes/ChatMock" alt="Stars Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/network/members"><img src="https://img.shields.io/github/forks/RayBytes/ChatMock" alt="Forks Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/pulls"><img src="https://img.shields.io/github/issues-pr/RayBytes/ChatMock" alt="Pull Requests Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/issues"><img src="https://img.shields.io/github/issues/RayBytes/ChatMock" alt="Issues Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/graphs/contributors"><img alt="GitHub contributors" src="https://img.shields.io/github/contributors/RayBytes/ChatMock?color=2b9348"></a>
-<a href="https://github.com/RayBytes/ChatMock/blob/master/LICENSE"><img src="https://img.shields.io/github/license/RayBytes/ChatMock?color=2b9348" alt="License Badge"/></a>
-</div>
-  </h1>
-  
-  <p><b>OpenAI & Ollama compatible API powered by your ChatGPT plan.</b></p>
-  <p>Use your ChatGPT Plus/Pro account to call OpenAI models from code or alternate chat UIs.</p>
-  <br>
-</div>
+# ChatMock
 
-## What It Does
+- OpenAI & Ollama compatible API proxy that reuses your ChatGPT Plus/Pro plan (paid account required).
+- Fork of `RayBytes/ChatMock`, maintained with a Docker-first workflow while still supporting a lightweight Python CLI.
 
-ChatMock runs a local server that creates an OpenAI/Ollama compatible API, and requests are then fulfilled using your authenticated ChatGPT login with the oauth client of Codex, OpenAI's coding CLI tool. This allows you to use GPT-5, GPT-5-Codex, and other models right through your OpenAI account, without requiring an api key. You are then able to use it in other chat apps or other coding tools. <br>
-This does require a paid ChatGPT account.
+## Requirements
 
-## Quickstart
+- ChatGPT account with Codex CLI OAuth access.
+- Python 3.11+ for the CLI or Docker + docker compose for containers.
+- Optional: Tailscale account when exposing ChatMock over your Tailnet.
 
-### Mac Users
+## Docker Quickstart
 
-#### GUI Application
+- Copy env template and adjust secrets: `cp .env.example .env`.
+- Build images: `docker compose build`.
+- Complete the OAuth flow once:
+  ```
+  docker compose run --rm --service-ports chatmock-login login
+  ```
+- Start the stack (ChatMock + `tailscaled` sidecar): `docker compose up -d chatmock`.
+- Reach the API on `http://localhost:8000/v1`; connect remotely after `tailscale up` in the sidecar.
+- Need more detail? See [DOCKER.md](https://github.com/ms-xie/ChatMock/blob/main/DOCKER.md) for the full container playbook.
 
-If you're on **macOS**, you can download the GUI app from the [GitHub releases](https://github.com/RayBytes/ChatMock/releases).  
-> **Note:** Since ChatMock isn't signed with an Apple Developer ID, you may need to run the following command in your terminal to open the app:
->
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/ChatMock.app
-> ```
->
-> *[More info here.](https://github.com/deskflow/deskflow/wiki/Running-on-macOS)*
+## CLI Quickstart
 
-#### Command Line (Homebrew)
+- Install dependencies (e.g. `pip install -r requirements.txt`) and stay in the project root.
+- Authenticate once: `python chatmock.py login`; confirm details with `python chatmock.py info`.
+- Run the local API gateway: `python chatmock.py serve` (defaults to `http://127.0.0.1:8000`).
+- Point SDKs at the `/v1` suffix, with `low` reasoning effort:
+  ```python
+  from openai import OpenAI
 
-You can also install ChatMock as a command-line tool using [Homebrew](https://brew.sh/):
-```
-brew tap RayBytes/chatmock
-brew install chatmock
-```
+  client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="<key>")
+  reply = client.chat.completions.create(
+      model="gpt-5",
+      messages=[{"role": "user", "content": "hello world #L"}],
+  )
+  print(reply.choices[0].message.content)
+  ```
+  Use the `OPENAI_API_KEY` value you saved in `.env` wherever the snippets below show `<key>`.
 
-### Python
-If you wish to just simply run this as a python flask server, you are also freely welcome too.
+## Feature Highlights
 
-Clone or download this repository, then cd into the project directory. Then follow the instrunctions listed below.
-
-1. Sign in with your ChatGPT account and follow the prompts
-```bash
-python chatmock.py login
-```
-You can make sure this worked by running `python chatmock.py info`
-
-2. After the login completes successfully, you can just simply start the local server
-
-```bash
-python chatmock.py serve
-```
-Then, you can simply use the address and port as the baseURL as you require (http://127.0.0.1:8000 by default)
-
-**Reminder:** When setting a baseURL in other applications, make you sure you include /v1/ at the end of the URL if you're using this as a OpenAI compatible endpoint (e.g http://127.0.0.1:8000/v1)
-
-### Docker
-
-Read [the docker instrunctions here](https://github.com/RayBytes/ChatMock/blob/main/DOCKER.md)
-
-# Examples
-
-### Python 
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="key"  # ignored
-)
-
-resp = client.chat.completions.create(
-    model="gpt-5",
-    messages=[{"role": "user", "content": "hello world"}]
-)
-
-print(resp.choices[0].message.content)
-```
-
-### curl
-
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H "Authorization: Bearer key" \
-  -H "Content-Type: application/json" \
-  -d '{
+- **OpenAI-compatible endpoints** — `/v1/chat/completions`, `/v1/completions`, `/v1/responses` reuse existing OpenAI clients.
+  ```bash
+  curl http://127.0.0.1:8000/v1/responses \
+       -H "Authorization: Bearer <key>" \
+       -H "Content-Type: application/json" \
+       -d '{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"hello world #L"}]}]}'
+  ```
+- **Ollama bridge** — `/api/chat`, `/api/show`, `/api/tags` let Ollama-oriented tools talk to ChatGPT-backed models.
+  ```bash
+  curl http://127.0.0.1:8000/api/chat \
+       -H "Content-Type: application/json" \
+       -d '{"model":"gpt-5","messages":[{"role":"user","content":"draft a haiku about proxies"}]}'
+  ```
+- **Account rotation & usage insight** — CLI surfaces stored sessions and limits.
+  ```bash
+  docker compose run --rm --service-ports chatmock-login login
+  ```
+- **Web search passthrough** — enable at launch with `--enable-web-search`, then request search tools per call.<br>
+Minimal effort (including the `gpt-5-mini` alias) skips web search, so raise the effort when you need live results.
+  ```json
+  {
     "model": "gpt-5",
-    "messages": [{"role":"user","content":"hello world"}]
-  }'
-```
+    "messages": [{"role": "user", "content": "Find current METAR rules #M"}],
+    "responses_tools": [{"type": "web_search"}],
+    "responses_tool_choice": "auto"
+  }
+  ```
+- **Per-request reasoning control** — inline tags dictate effort without editing config.
+  ```bash
+  curl http://127.0.0.1:8000/v1/responses \
+       -H "Authorization: Bearer <key>" \
+       -H "Content-Type: application/json" \
+       -d '{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"Explain FFT basics #M"}]}]}'
+  ```
 
-# What's supported
+## Configuration Checklist
 
-- Tool/Function calling 
-- Vision/Image understanding
-- Thinking summaries (through thinking tags)
-- Thinking effort
+- `.env` keys:
+  - `PORT`, `VERBOSE`, `OPENAI_API_KEY`, `API_KEY_CUSTOM_SUFFIX`.
+  - `CHATGPT_LOCAL_REASONING_EFFORT`, `CHATGPT_LOCAL_REASONING_SUMMARY`, `CHATGPT_LOCAL_REASONING_COMPAT`.
+  - `CHATGPT_ENABLE_WEB_SEARCH`, `CHATGPT_LOCAL_DEBUG_MODEL`, `CHATGPT_LOCAL_CLIENT_ID`.
+- CLI flags mirror envs:
+  - `python chatmock.py serve --reasoning-effort high --reasoning-summary concise`.
+  - `python chatmock.py serve --enable-web-search`.
+  - `python chatmock.py serve --expose-reasoning-models`.
 
-## Notes & Limits
+## Reasoning & Compatibility Notes
 
-- Requires an active, paid ChatGPT account.
-- Some context length might be taken up by internal instructions (but they dont seem to degrade the model) 
-- Use responsibly and at your own risk. This project is not affiliated with OpenAI, and is a educational exercise.
+- Inline tags `#L`, `#M`, `#H` or the `--reasoning-effort` flag switch between minimal/low/medium/high effort.
+- `gpt-5-mini` aliases to `gpt-5` with minimal effort and no reasoning summary for quick replies.
+- Set `--reasoning-compat legacy` to push summaries into reasoning tags instead of the response body.
 
-# Supported models
+## Supported Models
+
 - `gpt-5`
 - `gpt-5-codex`
 - `codex-mini`
+- `gpt-5-mini` (minimal effort alias)
 
-# Customisation / Configuration
+## Operational Tips
 
-### Thinking effort
-
-- `--reasoning-effort` (choice of minimal,low,medium,high)<br>
-GPT-5 has a configurable amount of "effort" it can put into thinking, which may cause it to take more time for a response to return, but may overall give a smarter answer. Applying this parameter after `serve` forces the server to use this reasoning effort by default, unless overrided by the API request with a different effort set. The default reasoning effort without setting this parameter is `medium`.
-
-### Thinking summaries
-
-- `--reasoning-summary` (choice of auto,concise,detailed,none)<br>
-Models like GPT-5 do not return raw thinking content, but instead return thinking summaries. These can also be customised by you.
-
-### OpenAI Tools
-
-- `--enable-web-search`<br>
-You can also access OpenAI tools through this project. Currently, only web search is available.
-You can enable it by starting the server with this parameter, which will allow OpenAI to determine when a request requires a web search, or you can use the following parameters during a request to the API to enable web search:
-<br><br>
-`responses_tools`: supports `[{"type":"web_search"}]` / `{ "type": "web_search_preview" }`<br>
-`responses_tool_choice`: `"auto"` or `"none"`
-
-#### Example usage
-```json
-{
-  "model": "gpt-5",
-  "messages": [{"role":"user","content":"Find current METAR rules"}],
-  "stream": true,
-  "responses_tools": [{"type": "web_search"}],
-  "responses_tool_choice": "auto"
-}
-```
-
-### Expose reasoning models
-
-- `--expose-reasoning-models`<br>
-If your preferred app doesn’t support selecting reasoning effort, or you just want a simpler approach, this parameter exposes each reasoning level as a separate, queryable model. Each reasoning level also appears individually under ⁠/v1/models, so model pickers in your favorite chat apps will list all reasoning options as distinct models you can switch between.
-
-## Notes
-If you wish to have the fastest responses, I'd recommend setting `--reasoning-effort` to minimal, and `--reasoning-summary` to none. <br>
-All parameters and choices can be seen by sending `python chatmock.py serve --h`<br>
-The context size of this route is also larger than what you get access to in the regular ChatGPT app.<br>
-
-When the model returns a thinking summary, the model will send back thinking tags to make it compatible with chat apps. **If you don't like this behavior, you can instead set `--reasoning-compat` to legacy, and reasoning will be set in the reasoning tag instead of being returned in the actual response text.**
-
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=RayBytes/ChatMock&type=Timeline)](https://www.star-history.com/#RayBytes/ChatMock&Timeline)
-
-
-
-
+- Toggle verbose logging by setting `VERBOSE=true` (check logs with `docker compose logs -f chatmock`).
+- Check available CLI options anytime: `python chatmock.py serve --help`.
+- Use responsibly; this community project is not affiliated with OpenAI.
