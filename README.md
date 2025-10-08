@@ -1,7 +1,14 @@
 # ChatMock
 
-- OpenAI & Ollama compatible API proxy that reuses your ChatGPT Plus/Pro plan (paid account required).
+- OpenAI & Ollama compatible API proxy that reuses your Codex ChatGPT Plus/Pro plan (**Paid Account Required**).
 - Fork of `RayBytes/ChatMock`, maintained with a Docker-first workflow while still supporting a lightweight Python CLI.
+
+## Major Updates
+
+- `/v1/responses` endpoint fully compatible with the Codex VS Code extension.
+- Multi-account vault with automatic selection and rotation to spread usage across sessions.
+- Terminal UI for browsing, selecting, and managing stored accounts without stop main proxy server.
+- Built-in Tailscale sidecar to expose ChatMock securely across your Tailnet.
 
 ## Requirements
 
