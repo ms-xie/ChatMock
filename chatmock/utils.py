@@ -502,7 +502,9 @@ def _secondary_reset_eta_seconds(slug: str) -> Optional[float]:
     now = datetime.datetime.now(datetime.timezone.utc)
     eta = (reset_at - now).total_seconds()
     if eta < 0:
-        return 0.0
+        # Do NOT use this account until every other candidate hits its own limit
+        # prevent get the refresh time from the server
+        return float("inf")
     return eta
 
 
