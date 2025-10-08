@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import errno
 import argparse
+import errno
 import json
 import os
 import sys
 import time
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .app import create_app
 from .config import CLIENT_ID_DEFAULT
@@ -188,12 +188,13 @@ def _profile_from_tokens(access_token: Optional[str], id_token: Optional[str]) -
     return email, plan_raw
 
 
-def _format_account_usage(snapshot: Optional[StoredRateLimitSnapshot]) -> tuple[List[str], bool]:
+def _format_account_usage(snapshot: Optional[StoredRateLimitSnapshot]) -> tuple[List[str], bool, bool]:
     if snapshot is None:
-        return ["    Usage: no data recorded yet."], False
+        return ["    Usage: no data recorded yet."], False, False
 
     lines: List[str] = []
     limit_hit = False
+    refresh_ready = False
     lines.append(f"    Last updated: {_format_local_datetime(snapshot.captured_at)}")
 
     windows: List[tuple[str, str, RateLimitWindow]] = []
@@ -204,28 +205,43 @@ def _format_account_usage(snapshot: Optional[StoredRateLimitSnapshot]) -> tuple[
 
     if not windows:
         lines.append("    Usage data available but no limit windows provided.")
-        return lines, False
+        return lines, False, False
 
+    now_utc = datetime.now(timezone.utc)
     for icon_label, desc, window in windows:
         percent_used = _clamp_percent(window.used_percent)
-        limit_hit = limit_hit or percent_used >= 100.0
-        remaining = max(0.0, 100.0 - percent_used)
-        color = _get_usage_color(percent_used)
-        reset_color = _reset_color()
-        progress = _render_progress_bar(percent_used)
-        lines.append(
-            f"    {icon_label}  {desc}: {color}{progress}{reset_color} {color}{percent_used:5.1f}% used{reset_color} | {remaining:5.1f}% left"
-        )
-        reset_in = _format_reset_duration(window.resets_in_seconds)
         reset_at = compute_reset_at(snapshot.captured_at, window)
-        if reset_in and reset_at:
+        if reset_at is not None and reset_at.tzinfo is None:
+            reset_at = reset_at.replace(tzinfo=timezone.utc)
+        reset_in = _format_reset_duration(window.resets_in_seconds)
+
+        stale_limit = bool(reset_at and percent_used >= 100.0 and reset_at <= now_utc)
+        if stale_limit:
+            refresh_ready = True
+            display_percent = 0.0
+            remaining = 100.0
+        else:
+            display_percent = percent_used
+            remaining = max(0.0, 100.0 - display_percent)
+            if percent_used >= 100.0:
+                limit_hit = True
+
+        color = _get_usage_color(display_percent)
+        reset_color = _reset_color()
+        progress = _render_progress_bar(display_percent)
+        lines.append(
+            f"    {icon_label}  {desc}: {color}{progress}{reset_color} {color}{display_percent:5.1f}% used{reset_color} | {remaining:5.1f}% left"
+        )
+        if stale_limit:
+            lines.append("       ⏳ Refresh after usage")
+        elif reset_in and reset_at:
             lines.append(f"       ⏳ Resets in {reset_in} at {_format_local_datetime(reset_at)}")
         elif reset_in:
             lines.append(f"       ⏳ Resets in {reset_in}")
         elif reset_at:
             lines.append(f"       ⏳ Resets at {_format_local_datetime(reset_at)}")
 
-    return lines, limit_hit
+    return lines, limit_hit, refresh_ready
 
 
 def _window_to_dict(window: Optional[RateLimitWindow]) -> Optional[Dict[str, Any]]:
@@ -245,7 +261,7 @@ def _collect_accounts_state() -> List[Dict[str, Any]]:
         if not isinstance(slug, str) or not slug:
             continue
         snapshot = load_rate_limit_snapshot(account_slug=slug)
-        usage_lines, limit_hit = _format_account_usage(snapshot)
+        usage_lines, limit_hit, refresh_ready = _format_account_usage(snapshot)
         usage_data: Dict[str, Any] = {}
         if snapshot is not None:
             usage_data = {
@@ -263,6 +279,7 @@ def _collect_accounts_state() -> List[Dict[str, Any]]:
                 "last_used": entry.get("last_used"),
                 "usage_lines": usage_lines,
                 "limit_hit": limit_hit,
+                "refresh_ready": refresh_ready,
                 "usage": usage_data,
             }
         )
@@ -292,7 +309,7 @@ def _print_account_dashboard(rows: List[Dict[str, Any]], active_slug: Optional[s
     print("")
     print("📂 ChatMock Account Manager")
     if rows:
-        print("Accounts marked with !LIMIT will rotate automatically when limits reset.")
+        print("Accounts marked with !LIMIT have hit their quota; !REFRESH were reset but need a fresh usage snapshot.")
     else:
         print("Link a ChatGPT account to begin.")
     print("")
@@ -304,10 +321,14 @@ def _print_account_dashboard(rows: List[Dict[str, Any]], active_slug: Optional[s
 
     for idx, row in enumerate(rows, start=1):
         marker = ">>" if row["slug"] == active_slug else "  "
-        limit_flag = " !LIMIT" if row["limit_hit"] else ""
+        flags = ""
+        if row.get("limit_hit"):
+            flags += " !LIMIT"
+        if row.get("refresh_ready"):
+            flags += " !REFRESH"
         plan_display = _plan_label(row.get("plan"))
         label = row.get("label") or row["slug"]
-        print(f"{marker} [{idx}] {label} ({plan_display}){limit_flag}")
+        print(f"{marker} [{idx}] {label} ({plan_display}){flags}")
         if row.get("email"):
             print(f"    Email: {row['email']}")
         if row.get("account_id"):
@@ -318,7 +339,7 @@ def _print_account_dashboard(rows: List[Dict[str, Any]], active_slug: Optional[s
             print(line)
         print("")
 
-    print("'>>' marks the active account. !LIMIT means the account is exhausted until reset.")
+    print("'>>' marks the active account. !LIMIT = quota reached, !REFRESH = reset and waiting for new usage data.")
     print("Actions: [number]=activate  n=new  d=delete  r=rename  q=quit")
     
 
