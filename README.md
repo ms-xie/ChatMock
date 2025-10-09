@@ -26,6 +26,10 @@
   ```
   docker compose run --rm --service-ports chatmock-login login
   ```
+- Log in to Tailscale once, after login you can Ctrl+C to exit:
+  ```
+  docker compose up tailscaled
+  ```
 - Start the stack (ChatMock + `tailscaled` sidecar): `docker compose up -d chatmock`.
 - Reach the API on `http://localhost:8000/v1`; connect remotely after `tailscale up` in the sidecar.
 - Need more detail? See [DOCKER.md](https://github.com/ms-xie/ChatMock/blob/main/DOCKER.md) for the full container playbook.

@@ -21,6 +21,11 @@
 - Paste the printed URL into a browser and, if callbacks fail, paste the redirect URL back into the terminal.
 - Re-run the same command anytime you want to rotate stored ChatGPT accounts.
 
+- Start the Tailscale OAuth login, after login you can Ctrl+C to exit:
+  ```
+  docker compose up tailscaled
+  ```
+
 ## Run the Stack
 
 - Bring up ChatMock (and the `tailscaled` sidecar) in the background: `docker compose up -d chatmock`.

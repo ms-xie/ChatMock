@@ -6,7 +6,8 @@ set -e
 
 # Wait a few seconds for the daemon to be ready.
 echo "Waiting for tailscaled to start..."
-until tailscale status > /dev/null 2>&1; do
+# `tailscale version` checks daemon readiness without triggering an auth flow.
+until tailscale version > /dev/null 2>&1; do
   sleep 1
 done
 echo "Tailscaled is running."
