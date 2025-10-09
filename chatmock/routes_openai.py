@@ -88,14 +88,29 @@ def chat_completions() -> Response:
     had_responses_tools = False
     if isinstance(responses_tools_payload, list):
         for _t in responses_tools_payload:
-            if not (isinstance(_t, dict) and isinstance(_t.get("type"), str)):
+            if not isinstance(_t, dict):
                 continue
-            if _t.get("type") not in ("web_search", "web_search_preview"):
+            tool_type = _t.get("type")
+            if not isinstance(tool_type, str):
+                continue
+            if tool_type == "web_search_preview":
                 return (
                     jsonify(
                         {
                             "error": {
-                                "message": "Only web_search/web_search_preview are supported in responses_tools",
+                                "message": "web_search_preview is no longer supported in responses_tools",
+                                "code": "RESPONSES_TOOL_UNSUPPORTED",
+                            }
+                        }
+                    ),
+                    400,
+                )
+            if tool_type != "web_search":
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": "Only web_search is supported in responses_tools",
                                 "code": "RESPONSES_TOOL_UNSUPPORTED",
                             }
                         }
@@ -131,9 +146,51 @@ def chat_completions() -> Response:
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": payload.get("prompt")}]}
         ]
 
+    extra_payload: Dict[str, Any] = {}
+    for key in (
+        # "max_output_tokens",
+        "max_tool_calls",
+        "temperature",
+        "top_p",
+        "top_logprobs",
+        "service_tier",
+        "safety_identifier",
+        "prompt_cache_key",
+        "previous_response_id",
+    ):
+        if key in payload:
+            extra_payload[key] = payload.get(key)
+    
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+    if metadata is not None:
+        extra_payload["metadata"] = metadata
+    if isinstance(stream_options, dict) and stream_options:
+        extra_payload["stream_options"] = stream_options
+
+    extra_payload_ignore: Dict[str, Any] = {}
+    for key in (
+        "max_output_tokens",
+    ):
+        if key in payload:
+            extra_payload_ignore[key] = payload.get(key)
+
+    if extra_payload_ignore:
+        print(f'This is not official response endpoint, these parameter will ignore:\n{extra_payload_ignore}\n')
+
+    # TODO: add parse reasoning effort in query as /v1/responses
     model_reasoning = extract_reasoning_from_model_name(requested_model)
     reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
     reasoning_param = build_reasoning_param(reasoning_effort, reasoning_summary, reasoning_overrides)
+
+    if reasoning_param.get('effort') == "minimal":
+        tools_responses = [
+            t for t in tools_responses
+            if t.get("type") != "web_search"
+        ]
+    if isinstance(reasoning_overrides, dict):
+        for k, v in reasoning_overrides.items():
+            if k not in reasoning_param and v is not None:
+                reasoning_param[k] = v
 
     upstream, error_resp = start_upstream_request(
         model,
@@ -143,55 +200,39 @@ def chat_completions() -> Response:
         tool_choice=tool_choice,
         parallel_tool_calls=parallel_tool_calls,
         reasoning_param=reasoning_param,
+        extra_payload=extra_payload,
     )
     if error_resp is not None:
         return error_resp
 
     record_rate_limits_from_response(upstream)
 
-    created = int(time.time())
-    if upstream.status_code >= 400:
+    # Check status
+    if upstream.status_code != 200:
+        # You can get the plain text or JSON error message
         try:
-            raw = upstream.content
-            err_body = json.loads(raw.decode("utf-8", errors="ignore")) if raw else {"raw": upstream.text}
-        except Exception:
-            err_body = {"raw": upstream.text}
-        if had_responses_tools:
-            if verbose:
-                print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
-            base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
-            safe_choice = payload.get("tool_choice", "auto")
-            upstream2, err2 = start_upstream_request(
-                model,
-                input_items,
-                instructions=BASE_INSTRUCTIONS,
-                tools=base_tools_only,
-                tool_choice=safe_choice,
-                parallel_tool_calls=parallel_tool_calls,
-                reasoning_param=reasoning_param,
-            )
-            record_rate_limits_from_response(upstream2)
-            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
-                upstream = upstream2
-            else:
-                return (
-                    jsonify(
-                        {
-                            "error": {
-                                "message": (err_body.get("error", {}) or {}).get("message", "Upstream error"),
-                                "code": "RESPONSES_TOOLS_REJECTED",
-                            }
-                        }
-                    ),
-                    (upstream2.status_code if upstream2 is not None else upstream.status_code),
-                )
-        else:
-            if verbose:
-                print("Upstream error status=", upstream.status_code)
-            return (
-                jsonify({"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}}),
-                upstream.status_code,
-            )
+            error_text = upstream.text  # Raw text body
+            # or try JSON decoding if the server returns JSON
+            error_json = upstream.json()  
+        except ValueError:
+            error_json = None
+
+        print("Status code:", upstream.status_code)
+        print("Response JSON:", error_json)
+        print("Response JSON:", error_json)
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "message": f"Upstream error: {error_json or error_text}",
+                        "code": "RESPONSES_TOOLS_REJECTED",
+                    }
+                }
+            ),
+            (upstream.status_code if upstream is not None else 500),
+        )
+    
+    created = int(time.time())
 
     if is_stream:
         resp = Response(
@@ -208,6 +249,8 @@ def chat_completions() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+        resp.headers.setdefault("X-Accel-Buffering", "no")
+        # Preserve your CORS handling
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -562,15 +605,29 @@ def responses() -> Response:
     extra_tools: List[Dict[str, Any]] = []
     if isinstance(responses_tools_payload, list):
         for _tool in responses_tools_payload:
-            if _tool.get("type") == "web_search_preview": continue
-            if not (isinstance(_tool, dict) and isinstance(_tool.get("type"), str)):
+            if not isinstance(_tool, dict):
                 continue
-            if _tool.get("type") not in ("web_search", "web_search_preview"):
+            tool_type = _tool.get("type")
+            if not isinstance(tool_type, str):
+                continue
+            if tool_type == "web_search_preview":
                 return (
                     jsonify(
                         {
                             "error": {
-                                "message": "Only web_search/web_search_preview are supported in responses_tools",
+                                "message": "web_search_preview is no longer supported in responses_tools",
+                                "code": "RESPONSES_TOOL_UNSUPPORTED",
+                            }
+                        }
+                    ),
+                    400,
+                )
+            if tool_type != "web_search":
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": "Only web_search is supported in responses_tools",
                                 "code": "RESPONSES_TOOL_UNSUPPORTED",
                             }
                         }
@@ -696,73 +753,6 @@ def responses() -> Response:
         )
 
     created = int(time.time())
-    if upstream.status_code >= 400:
-        try:
-            err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
-        except Exception:
-            err_body = {"raw": upstream.text}
-        if had_responses_tools:
-            if verbose:
-                print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
-            upstream2, err2 = start_upstream_request(
-                model,
-                input_items,
-                instructions=_instructions_for_model(model),
-                tools=base_tools,
-                tool_choice=payload.get("tool_choice", "auto"),
-                parallel_tool_calls=parallel_tool_calls,
-                reasoning_param=reasoning_param,
-                include=include_values,
-                store=store_flag,
-                # extra_payload=extra_payload,
-            )
-            # Check status
-            if upstream2.status_code != 200:
-                # You can get the plain text or JSON error message
-                try:
-                    error_text = upstream2.text  # Raw text body
-                    # or try JSON decoding if the server returns JSON
-                    error_json = upstream2.json()  
-                except ValueError:
-                    error_json = None
-
-                print("Status code 2:", upstream2.status_code)
-                print("Response text 2:", error_text)
-                print("Response JSON 2:", error_json)
-                return (
-                    jsonify(
-                        {
-                            "error": {
-                                "message": f"Upstream error: {error_json or error_text}",
-                                "code": "RESPONSES_TOOLS_REJECTED",
-                            }
-                        }
-                    ),
-                    (upstream2.status_code if upstream2 is not None else 500),
-                )
-            record_rate_limits_from_response(upstream2)
-            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
-                upstream = upstream2
-            else:
-                print(err2)
-                return (
-                    jsonify(
-                        {
-                            "error": {
-                                "message": (err_body.get("error", {}) or {}).get("message", "Upstream error"),
-                                "code": "RESPONSES_TOOLS_REJECTED",
-                            }
-                        }
-                    ),
-                    (upstream2.status_code if upstream2 is not None else upstream.status_code),
-                )
-        else:
-            if verbose:
-                print("Upstream error status=", upstream.status_code)
-            return (
-                jsonify({"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}}),
-                upstream.status_code,
-            )
 
     if stream_req:
         line_iter = upstream.iter_lines(chunk_size=2048, decode_unicode=False)
