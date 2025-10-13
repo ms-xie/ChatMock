@@ -757,19 +757,74 @@ def responses() -> Response:
 
     if stream_req:
         line_iter = upstream.iter_lines(chunk_size=2048, decode_unicode=False)
+        model_for_fix = (requested_model or model or "") or ""
+        needs_reasoning_spacing_fix = "codex" not in model_for_fix.lower()
+        saw_reasoning_summary_part = False
+        pending_reasoning_newline = False
+
+        def _maybe_fix_reasoning_summary(raw_line: Any) -> Any:
+            nonlocal saw_reasoning_summary_part, pending_reasoning_newline
+            if raw_line is None or not needs_reasoning_spacing_fix:
+                return raw_line
+            if isinstance(raw_line, (bytes, bytearray)):
+                decoded = raw_line.decode("utf-8", errors="ignore")
+                as_bytes = True
+            else:
+                decoded = str(raw_line)
+                as_bytes = False
+            if not decoded.startswith("data: "):
+                return raw_line
+            payload = decoded[len("data: ") :].strip()
+            if not payload or payload == "[DONE]":
+                return raw_line
+            try:
+                evt = json.loads(payload)
+            except Exception:
+                return raw_line
+            kind = evt.get("type")
+            if kind == "response.reasoning_summary_part.added":
+                if saw_reasoning_summary_part:
+                    pending_reasoning_newline = True
+                else:
+                    saw_reasoning_summary_part = True
+                return raw_line
+            if kind == "response.reasoning_summary_text.delta" and pending_reasoning_newline:
+                delta_text = evt.get("delta")
+                pending_reasoning_newline = False
+                if isinstance(delta_text, str) and delta_text and not delta_text.startswith("\n"):
+                    evt["delta"] = "\n\n" + delta_text
+                    new_payload = json.dumps(evt, separators=(",", ":"))
+                    new_line = f"data: {new_payload}"
+                    if as_bytes:
+                        return new_line.encode("utf-8")
+                    return new_line
+                if isinstance(delta_text, str) and delta_text.startswith("\n") and not delta_text.startswith("\n\n"):
+                    evt["delta"] = "\n" + delta_text
+                    new_payload = json.dumps(evt, separators=(",", ":"))
+                    new_line = f"data: {new_payload}"
+                    if as_bytes:
+                        return new_line.encode("utf-8")
+                    return new_line
+            return raw_line
+
         try:
             first_line = next(line_iter)
         except StopIteration:
             first_line = None
+        else:
+            first_line = _maybe_fix_reasoning_summary(first_line)
 
         def _relay():
             try:
                 if first_line is not None:
                     # iter_lines 移除換行；SSE 需還原
-                    yield first_line + b"\n"
+                    line_bytes = first_line if isinstance(first_line, (bytes, bytearray)) else str(first_line).encode("utf-8")
+                    yield line_bytes + b"\n"
                 for line in line_iter:
                     # 注意：空行需保留，代表事件分隔
-                    yield line + b"\n"
+                    fixed_line = _maybe_fix_reasoning_summary(line)
+                    line_bytes = fixed_line if isinstance(fixed_line, (bytes, bytearray)) else str(fixed_line).encode("utf-8")
+                    yield line_bytes + b"\n"
             except (GeneratorExit, BrokenPipeError):
                 # 客戶端斷線
                 pass
