@@ -747,7 +747,8 @@ def main() -> None:
             )
         )
     elif args.command == "info":
-        auth = read_auth_file()
+        active_slug = get_active_account_slug()
+        auth = read_auth_file(account_slug=active_slug) if active_slug else None
         if getattr(args, "json", False):
             print(json.dumps(auth or {}, indent=2))
             sys.exit(0)

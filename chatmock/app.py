@@ -23,7 +23,10 @@ def _load_expected_api_key() -> str | None:
         env_key = env_key.strip()
         return env_key.strip(API_KEY_CUSTOM_SUFFIX) + API_KEY_CUSTOM_SUFFIX
 
-    auth = read_auth_file()
+    active_slug = get_active_account_slug()
+    if not active_slug:
+        return None
+    auth = read_auth_file(account_slug=active_slug)
     if isinstance(auth, dict):
         stored_key = auth.get("OPENAI_API_KEY")
         if isinstance(stored_key, str) and stored_key.strip():
