@@ -4,10 +4,18 @@ import argparse
 import errno
 import json
 import os
+import re
 import sys
 import time
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, tzinfo
+from typing import Any, Dict, List, Optional
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+    ZoneInfoNotFoundError = Exception  # type: ignore
 
 from .app import create_app
 from .config import CLIENT_ID_DEFAULT
@@ -28,8 +36,6 @@ from .utils import (
     write_auth_file,
 )
 
-from typing import Any, Dict, List, Optional
-
 _STATUS_LIMIT_BAR_SEGMENTS = 30
 _STATUS_LIMIT_BAR_FILLED = "█"
 _STATUS_LIMIT_BAR_EMPTY = "░"
@@ -42,6 +48,71 @@ _PLAN_NAME_MAP = {
     "team": "Team",
     "enterprise": "Enterprise",
 }
+
+_USER_TIMEZONE_ENV_VAR = "CHATMOCK_USER_TZ"
+_UTC_OFFSET_PATTERN = re.compile(r"^(?P<prefix>(?:UTC|GMT)?)?(?P<sign>[+-]?)(?P<hours>\d{1,2})(?::?(?P<minutes>\d{2}))?$")
+
+_user_timezone_cache: Optional[tzinfo] = None
+_user_timezone_loaded = False
+_user_timezone_warning_sent = False
+
+
+def _emit_user_timezone_warning(raw_value: str) -> None:
+    global _user_timezone_warning_sent
+    if _user_timezone_warning_sent:
+        return
+    _user_timezone_warning_sent = True
+    eprint(
+        f"Ignoring {_USER_TIMEZONE_ENV_VAR}='{raw_value}': timezone not recognized; falling back to system local time."
+    )
+
+
+def _parse_timezone_offset(value: str) -> Optional[timedelta]:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned.upper() == "Z":
+        return timedelta(0)
+    match = _UTC_OFFSET_PATTERN.match(cleaned.upper())
+    if not match:
+        return None
+    sign = -1 if match.group("sign") == "-" else 1
+    hours = int(match.group("hours"))
+    minutes_str = match.group("minutes")
+    minutes = int(minutes_str) if minutes_str else 0
+    if hours > 23 or minutes > 59:
+        return None
+    delta = timedelta(hours=hours, minutes=minutes)
+    if sign < 0:
+        delta = -delta
+    return delta
+
+
+def _get_user_timezone() -> Optional[tzinfo]:
+    global _user_timezone_cache, _user_timezone_loaded
+    if _user_timezone_loaded:
+        return _user_timezone_cache
+    _user_timezone_loaded = True
+    raw = os.environ.get(_USER_TIMEZONE_ENV_VAR)
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    tz: Optional[tzinfo] = None
+    if ZoneInfo is not None:
+        try:
+            tz = ZoneInfo(raw)
+        except ZoneInfoNotFoundError:
+            tz = None
+    if tz is None:
+        offset = _parse_timezone_offset(raw)
+        if offset is not None:
+            tz = timezone(offset)
+    if tz is None:
+        _emit_user_timezone_warning(raw)
+    _user_timezone_cache = tz
+    return tz
 
 
 def _clamp_percent(value: float) -> float:
@@ -149,9 +220,43 @@ def _format_reset_duration(seconds: int | None) -> str | None:
 
 
 def _format_local_datetime(dt: datetime) -> str:
-    local = dt.astimezone()
-    tz_name = local.tzname() or "local"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    user_tz = _get_user_timezone()
+    if user_tz is not None:
+        local = dt.astimezone(user_tz)
+        tz_name = local.tzname() or os.environ.get(_USER_TIMEZONE_ENV_VAR) or "local"
+    else:
+        local = dt.astimezone()
+        tz_name = local.tzname() or "local"
     return f"{local.strftime('%b %d, %Y %H:%M')} {tz_name}"
+
+
+def _parse_datetime_value(raw: Any) -> Optional[datetime]:
+    if isinstance(raw, datetime):
+        dt = raw
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _format_last_used(raw: Any) -> Optional[str]:
+    dt = _parse_datetime_value(raw)
+    if dt is None:
+        return None
+    return _format_local_datetime(dt)
 
 
 def _plan_label(raw: Optional[str]) -> str:
@@ -269,6 +374,7 @@ def _collect_accounts_state() -> List[Dict[str, Any]]:
                 "primary": _window_to_dict(snapshot.snapshot.primary),
                 "secondary": _window_to_dict(snapshot.snapshot.secondary),
             }
+        last_used_display = _format_last_used(entry.get("last_used"))
         rows.append(
             {
                 "slug": slug,
@@ -276,7 +382,7 @@ def _collect_accounts_state() -> List[Dict[str, Any]]:
                 "email": entry.get("email"),
                 "plan": entry.get("plan"),
                 "account_id": entry.get("account_id"),
-                "last_used": entry.get("last_used"),
+                "last_used": last_used_display or entry.get("last_used"),
                 "usage_lines": usage_lines,
                 "limit_hit": limit_hit,
                 "refresh_ready": refresh_ready,
