@@ -668,7 +668,7 @@ def _handle_login_new_account(client_id: str, no_browser: bool, verbose: bool) -
         account_id=bundle.token_data.account_id,
         last_used=bundle.last_refresh,
     )
-    set_active_account_slug(final_slug)
+    set_active_account_slug(final_slug, source="manual")
 
     plan_display = _plan_label(plan_raw)
     eprint(f"Linked new account '{email or final_slug}' ({plan_display}). Now active.")
@@ -740,7 +740,7 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
             idx = int(choice)
             if 1 <= idx <= len(rows):
                 slug = rows[idx - 1]["slug"]
-                set_active_account_slug(slug)
+                set_active_account_slug(slug, source="manual")
                 eprint(f"Active account set to '{rows[idx - 1]['label']}'.")
                 force_render = True
             else:

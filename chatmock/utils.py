@@ -63,9 +63,9 @@ def _load_accounts_state() -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as fp:
             raw = json.load(fp)
     except FileNotFoundError:
-        return {"active": None, "accounts": {}}
+        return {"active": None, "active_source": None, "accounts": {}}
     except Exception:
-        return {"active": None, "accounts": {}}
+        return {"active": None, "active_source": None, "accounts": {}}
 
     accounts: Dict[str, Dict[str, Any]] = {}
     raw_accounts = raw.get("accounts") if isinstance(raw, dict) else None
@@ -78,7 +78,14 @@ def _load_accounts_state() -> Dict[str, Any]:
     active = raw.get("active") if isinstance(raw, dict) else None
     if not isinstance(active, str) or active not in accounts:
         active = None
-    return {"active": active, "accounts": accounts}
+    active_source = None
+    if isinstance(raw, dict):
+        source_raw = raw.get("active_source")
+        if isinstance(source_raw, str) and source_raw in {"auto", "manual"}:
+            active_source = source_raw
+    if active is None:
+        active_source = None
+    return {"active": active, "active_source": active_source, "accounts": accounts}
 
 
 def _write_accounts_state(state: Dict[str, Any]) -> None:
@@ -86,6 +93,7 @@ def _write_accounts_state(state: Dict[str, Any]) -> None:
     path = os.path.join(base, _ACCOUNTS_STATE_FILE)
     payload = {
         "active": state.get("active"),
+        "active_source": state.get("active_source"),
         "accounts": state.get("accounts", {}),
     }
     try:
@@ -144,12 +152,14 @@ def get_active_account_slug() -> Optional[str]:
     return None
 
 
-def set_active_account_slug(slug: Optional[str]) -> None:
+def set_active_account_slug(slug: Optional[str], source: str = "auto") -> None:
     with _STATE_LOCK:
         state = _load_accounts_state()
         accounts = dict(state.get("accounts", {}))
+        normalized_source = source if source in {"auto", "manual"} else "auto"
         if slug is None:
             state["active"] = None
+            state["active_source"] = None
         else:
             normalized = slug.strip()
             if normalized:
@@ -163,8 +173,10 @@ def set_active_account_slug(slug: Optional[str]) -> None:
                     meta["label"] = normalized
                 accounts[normalized] = meta
                 state["active"] = normalized
+                state["active_source"] = normalized_source
             else:
                 state["active"] = None
+                state["active_source"] = None
         state["accounts"] = accounts
         _write_accounts_state(state)
 
@@ -499,6 +511,11 @@ def _secondary_reset_eta_seconds(slug: str) -> Optional[float]:
 
 
 def _select_account_with_capacity(preferred: Optional[str]) -> Optional[str]:
+    state = _load_accounts_state()
+    manual_active = None
+    if isinstance(state.get("active"), str):
+        manual_active = state["active"] if state.get("active_source") == "manual" else None
+
     known = list_known_accounts()
     order: List[str] = []
     if isinstance(preferred, str) and preferred:
@@ -508,6 +525,10 @@ def _select_account_with_capacity(preferred: Optional[str]) -> Optional[str]:
         if isinstance(slug, str) and slug and slug not in order:
             order.append(slug)
     index_by_slug = {slug: idx for idx, slug in enumerate(order)}
+
+    if manual_active and manual_active in order and not _account_limit_reached(manual_active):
+        return manual_active
+
     candidates: List[Tuple[str, Optional[float]]] = []
     for slug in order:
         if slug and not _account_limit_reached(slug):
