@@ -828,6 +828,12 @@ def responses() -> Response:
             except (GeneratorExit, BrokenPipeError):
                 # 客戶端斷線
                 pass
+            except requests.exceptions.ChunkedEncodingError as exc:
+                if verbose:
+                    print(f"Streaming upstream ended early: {exc}")
+            except requests.exceptions.RequestException as exc:
+                if verbose:
+                    print(f"Streaming upstream error: {exc}")
             finally:
                 upstream.close()
 
@@ -918,6 +924,20 @@ def responses() -> Response:
                 usage_obj = usage_candidate
             if kind == "response.completed":
                 break
+    except requests.exceptions.ChunkedEncodingError as exc:
+        if verbose:
+            print(f"Non-stream upstream ended early: {exc}")
+        if error_message is None:
+            error_message = "Upstream response ended prematurely"
+        if error_payload is None:
+            error_payload = {"code": "UPSTREAM_STREAM_ERROR"}
+    except requests.exceptions.RequestException as exc:
+        if verbose:
+            print(f"Non-stream upstream error: {exc}")
+        if error_message is None:
+            error_message = "Upstream request error"
+        if error_payload is None:
+            error_payload = {"code": "UPSTREAM_REQUEST_ERROR"}
     finally:
         upstream.close()
 

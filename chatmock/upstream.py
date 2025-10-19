@@ -128,6 +128,8 @@ def start_upstream_request(
         "chatgpt-account-id": account_id,
         "OpenAI-Beta": "responses=experimental",
         "session_id": session_id,
+        "Accept-Encoding": "identity",
+        "Connection": "keep-alive"
     }
 
     # print('responses_payload\n\n---\n\n', responses_payload, '\n\n---\n\n')
