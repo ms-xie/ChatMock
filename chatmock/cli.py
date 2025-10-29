@@ -685,8 +685,12 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
     last_signature: Optional[tuple] = None
     prompt_visible = False
     force_render = True
+    session_deadline = time.monotonic() + (30 * 60)
 
     while True:
+        if time.monotonic() >= session_deadline:
+            eprint("Login session timed out after running for 30 minutes.")
+            return 1
         rows = _collect_accounts_state()
         active_slug = get_active_account_slug()
         signature = _usage_signature(rows)
@@ -703,8 +707,14 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
             print("Selection: ", end="", flush=True)
             prompt_visible = True
 
+        remaining = session_deadline - time.monotonic()
+        if remaining <= 0:
+            eprint("Login session timed out after running for 30 minutes.")
+            return 1
+        timeout = min(auto_refresh_seconds, remaining)
+
         try:
-            choice_raw = _readline_with_timeout(auto_refresh_seconds)
+            choice_raw = _readline_with_timeout(timeout)
         except EOFError:
             print("")
             return 0
@@ -719,6 +729,7 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
         choice = choice_raw.strip()
 
         if not choice:
+            force_render = True
             continue
 
         lowered = choice.lower()
