@@ -150,10 +150,10 @@ def chat_completions() -> Response:
     for key in (
         # "max_output_tokens",
         "max_tool_calls",
-        "temperature",
+        # "temperature",
         "top_p",
         "top_logprobs",
-        "service_tier",
+        # "service_tier",
         "safety_identifier",
         "prompt_cache_key",
         "previous_response_id",
@@ -170,6 +170,8 @@ def chat_completions() -> Response:
     extra_payload_ignore: Dict[str, Any] = {}
     for key in (
         "max_output_tokens",
+        "temperature",
+        "service_tier"
     ):
         if key in payload:
             extra_payload_ignore[key] = payload.get(key)
@@ -539,7 +541,7 @@ def responses() -> Response:
     for key in (
         # "max_output_tokens",
         "max_tool_calls",
-        "temperature",
+        # "temperature",
         "top_p",
         "top_logprobs",
         # "service_tier",
@@ -557,7 +559,8 @@ def responses() -> Response:
     extra_payload_ignore: Dict[str, Any] = {}
     for key in (
         "max_output_tokens",
-        "service_tier"
+        "service_tier",
+        "temperature"
     ):
         if key in payload:
             extra_payload_ignore[key] = payload.get(key)
