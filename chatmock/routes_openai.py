@@ -27,7 +27,7 @@ openai_bp = Blueprint("openai", __name__)
 
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
-    if model == "gpt-5-codex":
+    if model.startswith("gpt-5-codex"):
         codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
         if isinstance(codex, str) and codex.strip():
             return codex
@@ -44,7 +44,7 @@ def chat_completions() -> Response:
 
     if verbose:
         try:
-            body_preview = (request.get_data(cache=True, as_text=True) or "")[:2000]
+            body_preview = (request.get_data(cache=True, as_text=True) or "")
             print("IN POST /v1/chat/completions\n" + body_preview)
         except Exception:
             pass
@@ -122,7 +122,12 @@ def chat_completions() -> Response:
         if not extra_tools and bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
             responses_tool_choice = payload.get("responses_tool_choice")
             if not (isinstance(responses_tool_choice, str) and responses_tool_choice == "none"):
-                extra_tools = [{"type": "web_search"}]
+                existing_tools = tools_responses or []
+                if not any(
+                    isinstance(tool, dict) and tool.get("type") == "web_search"
+                    for tool in existing_tools
+                ):
+                    extra_tools = [{"type": "web_search"}]
 
         if extra_tools:
             import json as _json
@@ -243,7 +248,7 @@ def chat_completions() -> Response:
                 requested_model or model,
                 created,
                 verbose=verbose,
-                vlog=print if verbose else None,
+                vlog=None,
                 reasoning_compat=reasoning_compat,
                 include_usage=include_usage,
             ),
@@ -433,7 +438,10 @@ def responses() -> Response:
     raw_body = request.get_data(cache=True, as_text=True) or ""
     if verbose:
         try:
-            preview = raw_body
+            if len(raw_body) > 1000:
+                preview = raw_body[:500] + "..." + raw_body[-500:]
+            else:
+                preview = raw_body
             print("IN POST /v1/responses\n" + preview)
         except Exception:
             pass
@@ -514,7 +522,12 @@ def responses() -> Response:
         if not extra_tools and bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
             responses_tool_choice = payload.get("responses_tool_choice")
             if not (isinstance(responses_tool_choice, str) and responses_tool_choice == "none"):
-                extra_tools = [{"type": "web_search"}]
+                existing_tools = tools_responses or []
+                if not any(
+                    isinstance(tool, dict) and tool.get("type") == "web_search"
+                    for tool in existing_tools
+                ):
+                    extra_tools = [{"type": "web_search"}]
         if extra_tools:
             try:
                 size = len(json.dumps(extra_tools))
@@ -972,6 +985,7 @@ def list_models() -> Response:
     model_groups = [
         ("gpt-5", ["high", "medium", "low", "minimal"]),
         ("gpt-5-codex", ["high", "medium", "low"]),
+        ("gpt-5-codex-mini", ["high", "medium", "low"]),
         ("codex-mini", []),
         ("gpt-5-mini", [])
     ]

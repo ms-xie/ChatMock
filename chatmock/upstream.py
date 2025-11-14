@@ -5,7 +5,7 @@ import time
 from typing import Any, Dict, List, Tuple
 
 import requests
-from flask import Response, jsonify, make_response
+from flask import Response, jsonify, make_response, current_app
 
 from .config import CHATGPT_RESPONSES_URL
 from .http import build_cors_headers
@@ -34,6 +34,9 @@ def normalize_model_name(name: str | None, debug_model: str | None = None) -> st
         "gpt5-codex": "gpt-5-codex",
         "gpt-5-codex": "gpt-5-codex",
         "gpt-5-codex-latest": "gpt-5-codex",
+        "gpt5-codex-mini": "gpt-5-codex-mini",
+        "gpt-5-codex-mini": "gpt-5-codex-mini",
+        "gpt-5-codex-mini-latest": "gpt-5-codex-mini",
         "codex": "codex-mini-latest",
         "codex-mini": "codex-mini-latest",
         "codex-mini-latest": "codex-mini-latest",
@@ -56,6 +59,12 @@ def start_upstream_request(
     store: bool | None = False,
     extra_payload: Dict[str, Any] | None = None,
 ):
+    verbose = False
+    try:
+        verbose = bool(current_app.config.get("VERBOSE"))
+    except Exception:
+        verbose = False
+
     access_token, account_id = get_effective_chatgpt_auth()
     if not access_token or not account_id:
         resp = make_response(
@@ -132,7 +141,16 @@ def start_upstream_request(
         "Connection": "keep-alive"
     }
 
-    # print('responses_payload\n\n---\n\n', responses_payload, '\n\n---\n\n')
+    if verbose:
+        try:
+            preview_json = json.dumps(responses_payload, ensure_ascii=False, default=lambda o: repr(o))
+            if len(preview_json) > 1000:
+                preview = preview_json[:500] + "..." + preview_json[-500:]
+            else:
+                preview = preview_json
+            print("UPSTREAM POST /v1/responses\n" + preview)
+        except Exception:
+            pass
 
     try:
         upstream = requests.post(

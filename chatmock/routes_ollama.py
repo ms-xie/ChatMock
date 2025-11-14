@@ -21,7 +21,7 @@ ollama_bp = Blueprint("ollama", __name__)
 
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
-    if model == "gpt-5-codex":
+    if model.startswith("gpt-5-codex"):
         codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
         if isinstance(codex, str) and codex.strip():
             return codex
@@ -43,7 +43,7 @@ def ollama_tags() -> Response:
     if bool(current_app.config.get("VERBOSE")):
         print("IN GET /api/tags")
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
-    model_ids = ["gpt-5", "gpt-5-codex", "codex-mini"]
+    model_ids = ["gpt-5", "gpt-5-codex", "gpt-5-codex-mini", "codex-mini"]
     if expose_variants:
         model_ids.extend(
             [
@@ -54,6 +54,9 @@ def ollama_tags() -> Response:
                 "gpt-5-codex-high",
                 "gpt-5-codex-medium",
                 "gpt-5-codex-low",
+                "gpt-5-codex-mini-high",
+                "gpt-5-codex-mini-medium",
+                "gpt-5-codex-mini-low",
             ]
         )
     models = []
