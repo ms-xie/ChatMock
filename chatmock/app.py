@@ -16,6 +16,7 @@ from .utils import (
     read_auth_file,
 )
 from typing import Any
+from .prompt_sync import sync_prompt_from_official_github_if_due
 
 def _load_expected_api_key() -> str | None:
     env_key = os.getenv("OPENAI_API_KEY")
@@ -125,6 +126,9 @@ def create_app(
     @app.get("/")
     @app.get("/health")
     def health():
+        # sync_prompt_from_official_github once per day
+        sync_prompt_from_official_github_if_due(verbose=False)
+    
         return jsonify({"status": "ok"})
 
     @app.get("/usage_info")

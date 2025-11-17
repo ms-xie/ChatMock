@@ -53,7 +53,7 @@
 ## Usage Tips
 
 - Inline `#L`, `#M`, `#H` tags inside the final user message to force reasoning effort tiers.
-- Select `gpt-5-mini` when you want minimal effort, no reasoning summary, and faster turnarounds.
+- Select `gpt-5-mini` or `gpt-5.1-mini` when you want minimal effort, no reasoning summary, and faster turnarounds.
 - Enable verbose logging for diagnostics:
   ```
   VERBOSE=true docker compose up -d chatmock
@@ -66,7 +66,7 @@
   ```
   curl -s http://localhost:8000/v1/responses \
        -H "Content-Type: application/json" \
-       -d '{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"Hello world #L"}]}]}' \
+       -d '{"model":"gpt-5.1","input":[{"role":"user","content":[{"type":"input_text","text":"Hello world #L"}]}]}' \
        | jq .
   ```
 

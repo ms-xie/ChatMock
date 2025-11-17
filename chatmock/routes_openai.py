@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 import requests
 from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
-from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
+from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS, GPT5_1_INSTRUCTIONS
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
 from .reasoning import apply_reasoning_to_message, build_reasoning_param, extract_reasoning_from_model_name, extract_reasoning_from_last_input, clean_reasoning_tag_in_query
@@ -27,10 +27,15 @@ openai_bp = Blueprint("openai", __name__)
 
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
-    if model.startswith("gpt-5-codex"):
+    canonical = normalize_model_name(model)
+    if canonical.startswith("gpt-5-codex") or canonical.startswith("gpt-5.1-codex"):
         codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
         if isinstance(codex, str) and codex.strip():
             return codex
+    if '5.1' in canonical:
+        prompt_5_1 = current_app.config.get("GPT5_1_INSTRUCTIONS") or GPT5_1_INSTRUCTIONS
+        if isinstance(prompt_5_1, str) and prompt_5_1.strip():
+            return prompt_5_1
     return base
 
 
@@ -185,11 +190,19 @@ def chat_completions() -> Response:
         print(f'This is not official response endpoint, these parameter will ignore:\n{extra_payload_ignore}\n')
 
     # TODO: add parse reasoning effort in query as /v1/responses
-    model_reasoning = extract_reasoning_from_model_name(requested_model)
-    reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+    model_reasoning, force_minimal = extract_reasoning_from_model_name(requested_model)
+    
+    if force_minimal:
+        reasoning_overrides = model_reasoning
+    else:
+        reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+    
     reasoning_param = build_reasoning_param(reasoning_effort, reasoning_summary, reasoning_overrides)
 
-    if reasoning_param.get('effort') == "minimal":
+    if '5.1' in model and reasoning_param['effort']=='minimal':
+        reasoning_param['effort'] = 'none'
+
+    if reasoning_param.get('effort') in ["minimal", "none"]:
         tools_responses = [
             t for t in tools_responses
             if t.get("type") != "web_search"
@@ -578,18 +591,25 @@ def responses() -> Response:
         if key in payload:
             extra_payload_ignore[key] = payload.get(key)
 
-    model_reasoning = extract_reasoning_from_model_name(requested_model)
-    reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+    model_reasoning, force_minimal = extract_reasoning_from_model_name(requested_model)
     
+    if force_minimal:
+        reasoning_overrides = model_reasoning
+    else:
+        reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+
     input_items, reasoning_overrides_query = extract_reasoning_from_last_input(input_items)
     input_items = clean_reasoning_tag_in_query(input_items)
 
     if reasoning_overrides_query:
         reasoning_overrides = reasoning_overrides_query
-        
+
     reasoning_param = build_reasoning_param(reasoning_effort, reasoning_summary, reasoning_overrides)
+
+    if '5.1' in model and reasoning_param['effort']=='minimal':
+        reasoning_param['effort'] = 'none'
     
-    if reasoning_param.get('effort') == "minimal":
+    if reasoning_param.get('effort') in ["minimal", "none"]:
         tools_responses = [
             t for t in tools_responses
             if t.get("type") != "web_search"
@@ -984,10 +1004,14 @@ def list_models() -> Response:
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
     model_groups = [
         ("gpt-5", ["high", "medium", "low", "minimal"]),
+        ("gpt-5.1", ["high", "medium", "low", "minimal"]),
         ("gpt-5-codex", ["high", "medium", "low"]),
+        ("gpt-5.1-codex", ["high", "medium", "low"]),
         ("gpt-5-codex-mini", ["high", "medium", "low"]),
+        ("gpt-5.1-codex-mini", ["high", "medium", "low"]),
         ("codex-mini", []),
-        ("gpt-5-mini", [])
+        ("gpt-5-mini", []),
+        ("gpt-5.1-mini", []),
     ]
     model_ids: List[str] = []
     for base, efforts in model_groups:

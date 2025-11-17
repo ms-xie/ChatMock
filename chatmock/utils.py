@@ -416,6 +416,7 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
         for item in input_items:
             if item['role'] == 'user':
                 item['content'] = f"{system_content}\n\n---\n\n{item['content']}"
+                break
     return input_items
 
 

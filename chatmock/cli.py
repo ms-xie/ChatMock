@@ -35,6 +35,7 @@ from .utils import (
     update_account_metadata,
     write_auth_file,
 )
+from .prompt_sync import sync_prompt_from_official_github
 
 _STATUS_LIMIT_BAR_SEGMENTS = 30
 _STATUS_LIMIT_BAR_FILLED = "█"
@@ -831,7 +832,7 @@ def main() -> None:
         action="store_true",
         default=os.getenv("CHATGPT_LOCAL_EXPOSE_REASONING_MODELS", "").strip().lower() in ("1", "true", "yes", "on"),
         help=(
-            "Expose gpt-5 reasoning effort variants (minimal|low|medium|high) as separate models from /v1/models. "
+            "Expose gpt-5 (and gpt-5.1) reasoning effort variants (minimal|low|medium|high) as separate models from /v1/models. "
             "This allows choosing effort via model selection in compatible UIs."
         ),
     )

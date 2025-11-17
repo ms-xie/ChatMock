@@ -9,7 +9,7 @@ def build_reasoning_param(
     effort = (base_effort or "").strip().lower()
     summary = (base_summary or "").strip().lower()
 
-    valid_efforts = {"minimal", "low", "medium", "high"}
+    valid_efforts = {"none", "minimal", "low", "medium", "high"}
     valid_summaries = {"auto", "concise", "detailed", "none"}
 
     if isinstance(overrides, dict):
@@ -26,8 +26,8 @@ def build_reasoning_param(
 
     reasoning: Dict[str, Any] = {"effort": effort}
     
-    # if minimal effort, do not summary
-    if summary != "none" and effort != "minimal":
+    # if minimal(5)/none(5.1) effort, do not summary
+    if summary != "none" and effort not in ["minimal", "none"]:
         reasoning["summary"] = summary
     return reasoning
 
@@ -77,31 +77,42 @@ def apply_reasoning_to_message(
 
 def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | None:
     """Infer reasoning overrides from a model."""
+
+    force_minimal = False
+
     if not isinstance(model, str) or not model:
-        return None
+        return None, force_minimal
     s = model.strip().lower()
     if not s:
-        return None
+        return None, force_minimal
     efforts = {"minimal", "low", "medium", "high", "mini"}
 
     if ":" in s:
         maybe = s.rsplit(":", 1)[-1].strip()
         if maybe in efforts:
-            return {"effort": maybe}
+            return {"effort": maybe}, force_minimal
 
     for sep in ("-", "_"):
         if s.endswith(sep + "minimal"):
-            return {"effort": "minimal"}
+            return {"effort": "minimal"}, force_minimal
         if s.endswith(sep + "mini"):
-            return {"effort": "minimal"}
+            if 'codex' in s:
+                return None, force_minimal
+            
+            # this is for fake `gpt-5-mini`/`gpt-5.1-mini`
+            force_minimal = True
+            if '5.1' in s:
+                return {"effort": "none"}, force_minimal
+            else:
+                return {"effort": "minimal"}, force_minimal
         if s.endswith(sep + "low"):
-            return {"effort": "low"}
+            return {"effort": "low"}, force_minimal
         if s.endswith(sep + "medium"):
-            return {"effort": "medium"}
+            return {"effort": "medium"}, force_minimal
         if s.endswith(sep + "high"):
-            return {"effort": "high"}
+            return {"effort": "high"}, force_minimal
 
-    return None
+    return None, force_minimal
 
 def extract_last_query(input_items):
     user_input = None

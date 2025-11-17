@@ -45,7 +45,7 @@
 
   client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="<key>")
   reply = client.chat.completions.create(
-      model="gpt-5",
+      model="gpt-5.1",
       messages=[{"role": "user", "content": "hello world #L"}],
   )
   print(reply.choices[0].message.content)
@@ -59,23 +59,23 @@
   curl http://127.0.0.1:8000/v1/responses \
        -H "Authorization: Bearer <key>" \
        -H "Content-Type: application/json" \
-       -d '{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"hello world #L"}]}]}'
+       -d '{"model":"gpt-5.1","input":[{"role":"user","content":[{"type":"input_text","text":"hello world #L"}]}]}'
   ```
 - **Ollama bridge** — `/api/chat`, `/api/show`, `/api/tags` let Ollama-oriented tools talk to ChatGPT-backed models.
   ```bash
   curl http://127.0.0.1:8000/api/chat \
        -H "Content-Type: application/json" \
-       -d '{"model":"gpt-5","messages":[{"role":"user","content":"draft a haiku about proxies"}]}'
+       -d '{"model":"gpt-5.1","messages":[{"role":"user","content":"draft a haiku about proxies"}]}'
   ```
 - **Account rotation & usage insight** — CLI surfaces stored sessions and limits.
   ```bash
   docker compose run --rm --service-ports chatmock-login login
   ```
 - **Web search passthrough** — enable at launch with `--enable-web-search`, then request search tools per call.<br>
-Minimal effort (including the `gpt-5-mini` alias) skips web search, so raise the effort when you need live results.
+Minimal effort (including the `gpt-5-mini` / `gpt-5.1-mini` aliases) skips web search, so raise the effort when you need live results.
   ```json
   {
-    "model": "gpt-5",
+    "model": "gpt-5.1",
     "messages": [{"role": "user", "content": "Find current METAR rules #M"}],
     "responses_tools": [{"type": "web_search"}],
     "responses_tool_choice": "auto"
@@ -86,7 +86,7 @@ Minimal effort (including the `gpt-5-mini` alias) skips web search, so raise the
   curl http://127.0.0.1:8000/v1/responses \
        -H "Authorization: Bearer <key>" \
        -H "Content-Type: application/json" \
-       -d '{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"Explain FFT basics #M"}]}]}'
+       -d '{"model":"gpt-5.1","input":[{"role":"user","content":[{"type":"input_text","text":"Explain FFT basics #M"}]}]}'
   ```
 
 ## Configuration Checklist
@@ -103,15 +103,22 @@ Minimal effort (including the `gpt-5-mini` alias) skips web search, so raise the
 ## Reasoning & Compatibility Notes
 
 - Inline tags `#L`, `#M`, `#H` or the `--reasoning-effort` flag switch between minimal/low/medium/high effort.
-- `gpt-5-mini` aliases to `gpt-5` with minimal effort and no reasoning summary for quick replies.
+- `gpt-5-mini` and `gpt-5.1-mini` both alias to `gpt-5` with minimal effort and no reasoning summary for quick replies.
 - Set `--reasoning-compat legacy` to push summaries into reasoning tags instead of the response body.
 
 ## Supported Models
 
 - `gpt-5`
+- `gpt-5.1`
 - `gpt-5-codex`
+- `gpt-5.1-codex`
+- `gpt-5-codex-mini`
+- `gpt-5.1-codex-mini`
 - `codex-mini`
 - `gpt-5-mini` (minimal effort alias)
+- `gpt-5.1-mini` (minimal effort alias)
+
+`gpt-5.1` variants currently route through the same upstream targets as their `gpt-5` counterparts so you can opt into the new names without changing behavior.
 
 ## Operational Tips
 

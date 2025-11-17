@@ -21,7 +21,8 @@ ollama_bp = Blueprint("ollama", __name__)
 
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
-    if model.startswith("gpt-5-codex"):
+    canonical = normalize_model_name(model)
+    if canonical.startswith("gpt-5-codex") or canonical.startswith("gpt-5.1-codex"):
         codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
         if isinstance(codex, str) and codex.strip():
             return codex
@@ -43,7 +44,15 @@ def ollama_tags() -> Response:
     if bool(current_app.config.get("VERBOSE")):
         print("IN GET /api/tags")
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
-    model_ids = ["gpt-5", "gpt-5-codex", "gpt-5-codex-mini", "codex-mini"]
+    model_ids = [
+        "gpt-5",
+        "gpt-5.1",
+        "gpt-5-codex",
+        "gpt-5.1-codex",
+        "gpt-5-codex-mini",
+        "gpt-5.1-codex-mini",
+        "codex-mini",
+    ]
     if expose_variants:
         model_ids.extend(
             [
@@ -51,12 +60,22 @@ def ollama_tags() -> Response:
                 "gpt-5-medium",
                 "gpt-5-low",
                 "gpt-5-minimal",
+                "gpt-5.1-high",
+                "gpt-5.1-medium",
+                "gpt-5.1-low",
+                "gpt-5.1-minimal",
                 "gpt-5-codex-high",
                 "gpt-5-codex-medium",
                 "gpt-5-codex-low",
+                "gpt-5.1-codex-high",
+                "gpt-5.1-codex-medium",
+                "gpt-5.1-codex-low",
                 "gpt-5-codex-mini-high",
                 "gpt-5-codex-mini-medium",
                 "gpt-5-codex-mini-low",
+                "gpt-5.1-codex-mini-high",
+                "gpt-5.1-codex-mini-medium",
+                "gpt-5.1-codex-mini-low",
             ]
         )
     models = []
