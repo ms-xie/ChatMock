@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from datetime import date, datetime, timezone
+from importlib import reload as _reload_module
 import sys
 from pathlib import Path
 
 import requests
+import urllib.request
 
+from . import config as _config_module
 from .utils import eprint, get_accounts_base_dir
 
-GPT5_GITHUB_PROMPT_URL_BASE = "https://raw.githubusercontent.com/openai/codex/refs/heads/main/codex-rs/core/"
+GPT5_GITHUB_PROMPT_URL_BASE = "https://raw.githubusercontent.com/openai/codex/refs/tags/{tag}/codex-rs/core/"
+
 
 ROOT = Path(__file__).parent.parent.resolve()
 
@@ -17,6 +22,17 @@ prompt_list = [
     "gpt_5_codex_prompt.md",
     "prompt.md"
 ]
+
+def get_latest_tag() -> str:
+    # 這個 URL 會 302 轉跳到最新的 release 頁面
+    releases_latest = f"https://github.com/openai/codex/releases/latest"
+    # urllib 會自動跟隨 redirect，最後的 URL 就是實際 release 頁面
+    with urllib.request.urlopen(releases_latest) as resp:
+        final_url = resp.geturl()
+    # 例如：https://github.com/openai/codex/releases/tag/rust-v0.58.0
+    # 取最後一段當成 tag 名稱
+    tag = final_url.rsplit("/", 1)[-1]
+    return tag
 
 _PROMPT_SYNC_STATE_FILENAME = "prompt_sync_last_sync"
 
@@ -61,16 +77,47 @@ def _already_synced_today() -> bool:
         return False
     return last_sync >= _today_utc()
 
-def sync_prompt_from_official_github(
-    timeout: float = 15.0,
+
+def reload_prompt_instructions(
+    target: MutableMapping[str, object] | None = None,
     verbose: bool = False,
 ) -> bool:
     """
-    Download the canonical GPT-5 prompt and write it to ROOT.
+    Reload the prompt constants from chatmock.config and apply them to `target`
+    (typically `app.config`) so live servers can pick up the new text.
+    """
+    try:
+        _reload_module(_config_module)
+    except Exception as exc:
+        eprint(f"Unable to reload prompt configuration: {exc}")
+        return False
+
+    if target is not None:
+        target.update(
+            BASE_INSTRUCTIONS=_config_module.BASE_INSTRUCTIONS,
+            GPT5_CODEX_INSTRUCTIONS=_config_module.GPT5_CODEX_INSTRUCTIONS,
+            GPT5_1_INSTRUCTIONS=_config_module.GPT5_1_INSTRUCTIONS,
+        )
+
+    if verbose:
+        eprint("Prompt instructions reloaded from disk.")
+
+    return True
+
+
+def sync_prompt_from_official_github(
+    timeout: float = 15.0,
+    verbose: bool = False,
+    target_config: MutableMapping[str, object] | None = None,
+) -> bool:
+    """
+    Download the canonical GPT-5 prompt, refresh chatmock.config, and write it to ROOT.
     Returns True on success, False otherwise.
     """
+    latest_tag = get_latest_tag()
+    print('latest_tag: ', latest_tag)
     for prompt_file_name in prompt_list:
-        resolved_url = GPT5_GITHUB_PROMPT_URL_BASE + prompt_file_name
+        resolved_url = GPT5_GITHUB_PROMPT_URL_BASE.format(tag=latest_tag) + prompt_file_name
         path = ROOT / prompt_file_name
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +146,7 @@ def sync_prompt_from_official_github(
         if verbose:
             print(f"Synced GPT-5 prompt from {resolved_url} to {path}", file=sys.stderr)
     
+    reload_prompt_instructions(target=target_config, verbose=verbose)
     return True
 
 
@@ -106,6 +154,7 @@ def sync_prompt_from_official_github_if_due(
     timeout: float = 15.0,
     verbose: bool = False,
     force: bool = False,
+    target_config: MutableMapping[str, object] | None = None,
 ) -> bool:
     """
     Sync the official GPT-5 prompts once per UTC day unless `force` is True.
@@ -115,7 +164,11 @@ def sync_prompt_from_official_github_if_due(
             eprint("Prompt already synced for today; skipping download.")
         return True
 
-    success = sync_prompt_from_official_github(timeout=timeout, verbose=True)
+    success = sync_prompt_from_official_github(
+        timeout=timeout,
+        verbose=True,
+        target_config=target_config,
+    )
     if success:
         _write_last_sync_date(_today_utc())
     return success

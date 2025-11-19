@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 
-from flask import Flask, jsonify, make_response, request
+from flask import Flask, jsonify, make_response, request, current_app
+
+from .prompt_sync import sync_prompt_from_official_github_if_due, sync_prompt_from_official_github
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .http import build_cors_headers
@@ -16,7 +18,6 @@ from .utils import (
     read_auth_file,
 )
 from typing import Any
-from .prompt_sync import sync_prompt_from_official_github_if_due
 
 def _load_expected_api_key() -> str | None:
     env_key = os.getenv("OPENAI_API_KEY")
@@ -74,14 +75,13 @@ def create_app(
         REASONING_SUMMARY=reasoning_summary,
         REASONING_COMPAT=reasoning_compat,
         DEBUG_MODEL=debug_model,
-        BASE_INSTRUCTIONS=BASE_INSTRUCTIONS,
-        GPT5_CODEX_INSTRUCTIONS=GPT5_CODEX_INSTRUCTIONS,
         EXPOSE_REASONING_MODELS=bool(expose_reasoning_models),
         DEFAULT_WEB_SEARCH=bool(default_web_search),
     )
 
     app.config["EXPECTED_API_KEY"] = _load_expected_api_key()
     app.json.ensure_ascii = False
+    sync_prompt_from_official_github_if_due(verbose=True, target_config=app.config, force=True)
 
     @app.before_request
     def _require_api_key():
@@ -127,7 +127,10 @@ def create_app(
     @app.get("/health")
     def health():
         # sync_prompt_from_official_github once per day
-        sync_prompt_from_official_github_if_due(verbose=False)
+        sync_prompt_from_official_github_if_due(
+            verbose=False,
+            target_config=current_app.config,
+        )
     
         return jsonify({"status": "ok"})
 
