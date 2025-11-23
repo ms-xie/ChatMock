@@ -808,7 +808,7 @@ def main() -> None:
     )
     p_serve.add_argument(
         "--reasoning-effort",
-        choices=["minimal", "low", "medium", "high"],
+        choices=["minimal", "low", "medium", "high", "xhigh"],
         default=os.getenv("CHATGPT_LOCAL_REASONING_EFFORT", "medium").lower(),
         help="Reasoning effort level for Responses API (default: medium)",
     )
@@ -832,7 +832,7 @@ def main() -> None:
         action="store_true",
         default=os.getenv("CHATGPT_LOCAL_EXPOSE_REASONING_MODELS", "").strip().lower() in ("1", "true", "yes", "on"),
         help=(
-            "Expose gpt-5 (and gpt-5.1) reasoning effort variants (minimal|low|medium|high) as separate models from /v1/models. "
+            "Expose gpt-5 (and gpt-5.1) reasoning effort variants (minimal|low|medium|high|xhigh) as separate models from /v1/models. "
             "This allows choosing effort via model selection in compatible UIs."
         ),
     )

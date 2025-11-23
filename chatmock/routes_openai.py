@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 import requests
 from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
-from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS, GPT5_1_INSTRUCTIONS
+from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS, GPT5_1_INSTRUCTIONS, GPT5_1_CODEX_MAX_INSTRUCTIONS
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
 from .reasoning import apply_reasoning_to_message, build_reasoning_param, extract_reasoning_from_model_name, extract_reasoning_from_last_input, clean_reasoning_tag_in_query
@@ -28,10 +28,14 @@ openai_bp = Blueprint("openai", __name__)
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
     canonical = normalize_model_name(model)
-    if canonical.startswith("gpt-5-codex") or canonical.startswith("gpt-5.1-codex"):
+    codex = None
+    if canonical.startswith("gpt-5.1-codex-max"):
+        codex = current_app.config.get("GPT5_1_CODEX_MAX_INSTRUCTIONS") or GPT5_1_CODEX_MAX_INSTRUCTIONS
+    elif canonical.startswith("gpt-5-codex") or canonical.startswith("gpt-5.1-codex"):
         codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
-        if isinstance(codex, str) and codex.strip():
-            return codex
+    if isinstance(codex, str) and codex.strip():
+        return codex
+    
     if '5.1' in canonical:
         prompt_5_1 = current_app.config.get("GPT5_1_INSTRUCTIONS") or GPT5_1_INSTRUCTIONS
         if isinstance(prompt_5_1, str) and prompt_5_1.strip():
@@ -598,11 +602,12 @@ def responses() -> Response:
     else:
         reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
 
-    input_items, reasoning_overrides_query = extract_reasoning_from_last_input(input_items)
-    input_items = clean_reasoning_tag_in_query(input_items)
+    # we don't use this by default to reduce overhead
+    # input_items, reasoning_overrides_query = extract_reasoning_from_last_input(input_items)
+    # input_items = clean_reasoning_tag_in_query(input_items)
 
-    if reasoning_overrides_query:
-        reasoning_overrides = reasoning_overrides_query
+    # if reasoning_overrides_query:
+    #     reasoning_overrides = reasoning_overrides_query
 
     reasoning_param = build_reasoning_param(reasoning_effort, reasoning_summary, reasoning_overrides)
 
@@ -1009,6 +1014,7 @@ def list_models() -> Response:
         ("gpt-5.1-codex", ["high", "medium", "low"]),
         ("gpt-5-codex-mini", ["high", "medium", "low"]),
         ("gpt-5.1-codex-mini", ["high", "medium", "low"]),
+        ("gpt-5.1-codex-max", ["xhigh", "high", "medium", "low"]),
         ("codex-mini", []),
         ("gpt-5-mini", []),
         ("gpt-5.1-mini", []),

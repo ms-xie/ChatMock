@@ -9,7 +9,7 @@ def build_reasoning_param(
     effort = (base_effort or "").strip().lower()
     summary = (base_summary or "").strip().lower()
 
-    valid_efforts = {"none", "minimal", "low", "medium", "high"}
+    valid_efforts = {"none", "minimal", "low", "medium", "high", "xhigh"}
     valid_summaries = {"auto", "concise", "detailed", "none"}
 
     if isinstance(overrides, dict):
@@ -85,7 +85,7 @@ def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | Non
     s = model.strip().lower()
     if not s:
         return None, force_minimal
-    efforts = {"minimal", "low", "medium", "high", "mini"}
+    efforts = {"minimal", "low", "medium", "high", "mini", "xhigh"}
 
     if ":" in s:
         maybe = s.rsplit(":", 1)[-1].strip()

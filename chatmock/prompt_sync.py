@@ -20,7 +20,8 @@ ROOT = Path(__file__).parent.parent.resolve()
 prompt_list = [
     "gpt_5_1_prompt.md",
     "gpt_5_codex_prompt.md",
-    "prompt.md"
+    "prompt.md",
+    "gpt-5.1-codex-max_prompt.md"
 ]
 
 def get_latest_tag() -> str:
@@ -97,6 +98,7 @@ def reload_prompt_instructions(
             BASE_INSTRUCTIONS=_config_module.BASE_INSTRUCTIONS,
             GPT5_CODEX_INSTRUCTIONS=_config_module.GPT5_CODEX_INSTRUCTIONS,
             GPT5_1_INSTRUCTIONS=_config_module.GPT5_1_INSTRUCTIONS,
+            GPT5_1_CODEX_MAX_INSTRUCTIONS=_config_module.GPT5_1_CODEX_MAX_INSTRUCTIONS
         )
 
     if verbose:

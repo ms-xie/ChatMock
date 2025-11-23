@@ -6,7 +6,6 @@ from flask import Flask, jsonify, make_response, request, current_app
 
 from .prompt_sync import sync_prompt_from_official_github_if_due, sync_prompt_from_official_github
 
-from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .http import build_cors_headers
 from .routes_openai import openai_bp, API_KEY_CUSTOM_SUFFIX
 from .routes_ollama import ollama_bp

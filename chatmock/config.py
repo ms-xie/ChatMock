@@ -47,7 +47,13 @@ def read_gpt5_1_instructions(fallback: str) -> str:
     content = _read_prompt_text("gpt_5_1_prompt.md")
     return content if isinstance(content, str) and content.strip() else fallback
 
+def read_gpt5_1_codex_max_instructions(fallback: str) -> str:
+    content = _read_prompt_text("gpt-5.1-codex-max_prompt.md")
+    return content if isinstance(content, str) and content.strip() else fallback
+
+
 
 BASE_INSTRUCTIONS = read_base_instructions()
 GPT5_CODEX_INSTRUCTIONS = read_gpt5_codex_instructions(BASE_INSTRUCTIONS)
 GPT5_1_INSTRUCTIONS = read_gpt5_1_instructions(BASE_INSTRUCTIONS)
+GPT5_1_CODEX_MAX_INSTRUCTIONS = read_gpt5_1_codex_max_instructions(GPT5_CODEX_INSTRUCTIONS)

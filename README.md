@@ -114,6 +114,7 @@ Minimal effort (including the `gpt-5-mini` / `gpt-5.1-mini` aliases) skips web s
 - `gpt-5.1-codex`
 - `gpt-5-codex-mini`
 - `gpt-5.1-codex-mini`
+- `gpt-5.1-codex-max`
 - `codex-mini`
 - `gpt-5-mini` (minimal effort alias)
 - `gpt-5.1-mini` (minimal effort alias)

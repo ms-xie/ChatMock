@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
-from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
+from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS, GPT5_1_INSTRUCTIONS, GPT5_1_CODEX_MAX_INSTRUCTIONS
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
 from .reasoning import build_reasoning_param, extract_reasoning_from_model_name
@@ -22,10 +22,18 @@ ollama_bp = Blueprint("ollama", __name__)
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
     canonical = normalize_model_name(model)
-    if canonical.startswith("gpt-5-codex") or canonical.startswith("gpt-5.1-codex"):
+    codex = None
+    if canonical.startswith("gpt-5.1-codex-max"):
+        codex = current_app.config.get("GPT5_1_CODEX_MAX_INSTRUCTIONS") or GPT5_1_CODEX_MAX_INSTRUCTIONS
+    elif canonical.startswith("gpt-5-codex") or canonical.startswith("gpt-5.1-codex"):
         codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
-        if isinstance(codex, str) and codex.strip():
-            return codex
+    if isinstance(codex, str) and codex.strip():
+        return codex
+    
+    if '5.1' in canonical:
+        prompt_5_1 = current_app.config.get("GPT5_1_INSTRUCTIONS") or GPT5_1_INSTRUCTIONS
+        if isinstance(prompt_5_1, str) and prompt_5_1.strip():
+            return prompt_5_1
     return base
 
 
@@ -51,6 +59,7 @@ def ollama_tags() -> Response:
         "gpt-5.1-codex",
         "gpt-5-codex-mini",
         "gpt-5.1-codex-mini",
+        "gpt-5.1-codex-max",
         "codex-mini",
     ]
     if expose_variants:
@@ -76,6 +85,10 @@ def ollama_tags() -> Response:
                 "gpt-5.1-codex-mini-high",
                 "gpt-5.1-codex-mini-medium",
                 "gpt-5.1-codex-mini-low",
+                "gpt-5.1-codex-max-xhigh",
+                "gpt-5.1-codex-max-high",
+                "gpt-5.1-codex-max-medium",
+                "gpt-5.1-codex-max-low",
             ]
         )
     models = []
