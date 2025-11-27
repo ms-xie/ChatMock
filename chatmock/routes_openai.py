@@ -13,6 +13,7 @@ from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
 from .reasoning import apply_reasoning_to_message, build_reasoning_param, extract_reasoning_from_model_name, extract_reasoning_from_last_input, clean_reasoning_tag_in_query
 from .upstream import normalize_model_name, start_upstream_request
+from . import reasoning_cache
 from .utils import (
     convert_chat_messages_to_responses_input,
     convert_tools_chat_to_responses,
@@ -414,6 +415,44 @@ def responses() -> Response:
             return items
         return []
 
+    def _expand_item_references(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        expanded: List[Dict[str, Any]] = []
+
+        def _replace_ref(obj: Dict[str, Any]) -> Dict[str, Any]:
+            if obj.get("type") != "item_reference":
+                return obj
+            item_id = obj.get("id")
+            cached = reasoning_cache.get(item_id)
+            if not cached or not cached.get("encrypted_content"):
+                return obj
+            summary_text = cached.get("summary_text") or ""
+            summary = [{"type": "summary_text", "text": summary_text}] if summary_text else []
+            return {
+                "type": "reasoning",
+                "summary": summary,
+                "content": None,
+                "encrypted_content": cached.get("encrypted_content"),
+            }
+
+        for item in items:
+            if isinstance(item, dict):
+                if item.get("type") == "item_reference":
+                    expanded.append(_replace_ref(item))
+                    continue
+                if isinstance(item.get("content"), list):
+                    new_content = []
+                    for part in item.get("content") or []:
+                        if isinstance(part, dict) and part.get("type") == "item_reference":
+                            new_content.append(_replace_ref(part))
+                        else:
+                            new_content.append(part)
+                    new_item = dict(item)
+                    new_item["content"] = new_content
+                    expanded.append(new_item)
+                    continue
+            expanded.append(item)
+        return expanded
+
     def _normalize_tools(raw: Any) -> List[Dict[str, Any]]:
         tools_out: List[Dict[str, Any]] = []
         if not isinstance(raw, list):
@@ -478,6 +517,9 @@ def responses() -> Response:
     stream_options = payload.get("stream_options") if isinstance(payload.get("stream_options"), dict) else {}
 
     requested_model = payload.get("model")
+    # temporary fix for gpt-5.1-codex mapping until api support is added
+    if requested_model == 'gpt-5.1-codex':
+        requested_model = 'gpt-5.1-codex-max'
     model = normalize_model_name(requested_model, debug_model)
 
     instructions = payload.get("instructions")
@@ -491,6 +533,7 @@ def responses() -> Response:
         input_items = _normalize_input(payload.get("prompt"))
     if not input_items and isinstance(payload.get("input"), dict):
         input_items = _normalize_input([payload.get("input")])
+    input_items = _expand_item_references(input_items)
 
     tool_choice = payload.get("tool_choice", "auto")
     parallel_tool_calls_value = payload.get("parallel_tool_calls")
@@ -564,7 +607,7 @@ def responses() -> Response:
 
     include_values = payload.get("include") if isinstance(payload.get("include"), list) else []
     store_requested = payload.get("store")
-    store_flag = bool(store_requested) if isinstance(store_requested, bool) else False
+    store_flag = False # codex only accept store=False
 
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
     extra_payload: Dict[str, Any] = {}
@@ -676,6 +719,9 @@ def responses() -> Response:
         needs_reasoning_spacing_fix = "codex" not in model_for_fix.lower()
         saw_reasoning_summary_part = False
         pending_reasoning_newline = False
+        PRIORITY_ADDED = 1
+        PRIORITY_DONE = 2
+        PRIORITY_COMPLETED = 3
 
         def _maybe_fix_reasoning_summary(raw_line: Any) -> Any:
             nonlocal saw_reasoning_summary_part, pending_reasoning_newline
@@ -722,12 +768,90 @@ def responses() -> Response:
                     return new_line
             return raw_line
 
+        def _extract_summary_text(parts: Any) -> str | None:
+            if not isinstance(parts, list):
+                return None
+            texts: list[str] = []
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "summary_text":
+                    t = part.get("text")
+                    if isinstance(t, str):
+                        texts.append(t)
+            if not texts:
+                return None
+            return "".join(texts)
+
+        def _capture_reasoning_from_event(evt: Dict[str, Any]) -> None:
+            kind = evt.get("type")
+            if kind == "response.output_item.added":
+                item = evt.get("item") or {}
+                if isinstance(item, dict) and item.get("type") == "reasoning":
+                    item_id = item.get("id")
+                    enc = item.get("encrypted_content")
+                    if isinstance(item_id, str) and isinstance(enc, str):
+                        reasoning_cache.set_encrypted(item_id, enc, PRIORITY_ADDED)
+            elif kind == "response.output_item.done":
+                item = evt.get("item") or {}
+                if isinstance(item, dict) and item.get("type") == "reasoning":
+                    item_id = item.get("id")
+                    enc = item.get("encrypted_content")
+                    if isinstance(item_id, str) and isinstance(enc, str):
+                        reasoning_cache.set_encrypted(item_id, enc, PRIORITY_DONE)
+            elif kind == "response.reasoning_summary_text.delta":
+                item_id = evt.get("item_id")
+                delta = evt.get("delta")
+                if isinstance(item_id, str) and isinstance(delta, str):
+                    reasoning_cache.append_summary_delta(item_id, delta)
+            elif kind == "response.reasoning_summary_text.done":
+                item_id = evt.get("item_id")
+                text_value = evt.get("text")
+                if isinstance(item_id, str) and isinstance(text_value, str):
+                    reasoning_cache.set_summary(item_id, text_value)
+            elif kind == "response.completed":
+                resp_obj = evt.get("response") or {}
+                outputs = resp_obj.get("output")
+                if isinstance(outputs, list):
+                    for out in outputs:
+                        if not isinstance(out, dict):
+                            continue
+                        if out.get("type") != "reasoning":
+                            continue
+                        item_id = out.get("id")
+                        enc = out.get("encrypted_content")
+                        if isinstance(item_id, str) and isinstance(enc, str):
+                            reasoning_cache.set_encrypted(item_id, enc, PRIORITY_COMPLETED)
+                        summary_text = _extract_summary_text(out.get("summary"))
+                        if isinstance(item_id, str) and isinstance(summary_text, str):
+                            reasoning_cache.set_summary(item_id, summary_text)
+
+        def _capture_line_for_cache(raw_line: Any) -> None:
+            if raw_line is None:
+                return
+            try:
+                decoded = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else str(raw_line)
+            except Exception:
+                return
+            if not decoded.startswith("data: "):
+                return
+            payload = decoded[len("data: ") :].strip()
+            if not payload or payload == "[DONE]":
+                return
+            try:
+                evt = json.loads(payload)
+            except Exception:
+                return
+            if isinstance(evt, dict):
+                _capture_reasoning_from_event(evt)
+
         try:
             first_line = next(line_iter)
         except StopIteration:
             first_line = None
         else:
             first_line = _maybe_fix_reasoning_summary(first_line)
+            _capture_line_for_cache(first_line)
 
         def _relay():
             try:
@@ -738,6 +862,7 @@ def responses() -> Response:
                 for line in line_iter:
                     # 注意：空行需保留，代表事件分隔
                     fixed_line = _maybe_fix_reasoning_summary(line)
+                    _capture_line_for_cache(fixed_line)
                     line_bytes = fixed_line if isinstance(fixed_line, (bytes, bytearray)) else str(fixed_line).encode("utf-8")
                     yield line_bytes + b"\n"
             except (GeneratorExit, BrokenPipeError):

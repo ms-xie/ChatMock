@@ -122,7 +122,7 @@ def start_upstream_request(
         "tools": tools or [],
         "tool_choice": tool_choice if tool_choice in ("auto", "none") or isinstance(tool_choice, dict) else "auto",
         "parallel_tool_calls": bool(parallel_tool_calls),
-        "store": bool(store) if store is not None else False,
+        "store": False,
         "stream": True,
         "prompt_cache_key": session_id,
     }
@@ -158,7 +158,9 @@ def start_upstream_request(
 
     if verbose:
         try:
-            preview_json = json.dumps(responses_payload, ensure_ascii=False, default=lambda o: repr(o))
+            preview_payload = responses_payload.copy()
+            preview_payload['instructions'] = preview_payload['instructions'][:100] + "..." if isinstance(preview_payload['instructions'], str) and len(preview_payload['instructions']) > 100 else preview_payload['instructions']
+            preview_json = json.dumps(preview_payload, ensure_ascii=False, default=lambda o: repr(o))
             if len(preview_json) > 1000:
                 preview = preview_json[:500] + "..." + preview_json[-500:]
             else:
