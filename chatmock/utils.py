@@ -437,6 +437,8 @@ def convert_tools_chat_to_responses(tools: Any) -> List[Dict[str, Any]]:
         params = fn.get("parameters") if isinstance(fn, dict) else None
         if not isinstance(params, dict):
             params = {"type": "object", "properties": {}}
+        if not isinstance(params.get("properties"), dict):
+            params["properties"] = {}
         out.append(
             {
                 "type": "function",

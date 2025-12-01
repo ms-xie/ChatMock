@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
@@ -418,12 +419,33 @@ def responses() -> Response:
     def _expand_item_references(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         expanded: List[Dict[str, Any]] = []
 
-        def _replace_ref(obj: Dict[str, Any]) -> Dict[str, Any]:
+        def _replace_ref(obj: Dict[str, Any]) -> Dict[str, Any] | None:
             if obj.get("type") != "item_reference":
                 return obj
             item_id = obj.get("id")
             cached = reasoning_cache.get(item_id)
-            if not cached or not cached.get("encrypted_content"):
+            if not cached:
+                # skip unknown references
+                return None
+
+            cached_item = cached.get("item")
+            if isinstance(cached_item, dict):
+                # Deepcopy to avoid mutating cache when request mutates input items.
+                item_copy = copy.deepcopy(cached_item)
+                if item_copy.get("type") == "reasoning":
+                    summary_text = cached.get("summary_text") or ""
+                    has_summary = False
+                    summary_list = item_copy.get("summary") if isinstance(item_copy.get("summary"), list) else []
+                    for part in summary_list or []:
+                        if isinstance(part, dict) and part.get("type") == "summary_text":
+                            has_summary = True
+                            break
+                    if summary_text and not has_summary:
+                        summary_list = (summary_list or []) + [{"type": "summary_text", "text": summary_text}]
+                        item_copy["summary"] = summary_list
+                return item_copy
+
+            if not cached.get("encrypted_content"):
                 return obj
             summary_text = cached.get("summary_text") or ""
             summary = [{"type": "summary_text", "text": summary_text}] if summary_text else []
@@ -437,13 +459,17 @@ def responses() -> Response:
         for item in items:
             if isinstance(item, dict):
                 if item.get("type") == "item_reference":
-                    expanded.append(_replace_ref(item))
+                    repl = _replace_ref(item)
+                    if repl is not None:
+                        expanded.append(repl)
                     continue
                 if isinstance(item.get("content"), list):
                     new_content = []
                     for part in item.get("content") or []:
                         if isinstance(part, dict) and part.get("type") == "item_reference":
-                            new_content.append(_replace_ref(part))
+                            repl = _replace_ref(part)
+                            if repl is not None:
+                                new_content.append(repl)
                         else:
                             new_content.append(part)
                     new_item = dict(item)
@@ -479,6 +505,8 @@ def responses() -> Response:
                 continue
             if tool.get("type") == "function" and isinstance(tool.get("name"), str):
                 params = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object", "properties": {}}
+                if not params.get("properties"):
+                    params["properties"] = {}
                 normalized = {
                     "type": "function",
                     "name": tool.get("name"),
@@ -490,6 +518,68 @@ def responses() -> Response:
                 continue
             tools_out.append(tool)
         return tools_out
+
+    PRIORITY_ADDED = 1
+    PRIORITY_DONE = 2
+    PRIORITY_COMPLETED = 3
+
+    def _extract_summary_text(parts: Any) -> str | None:
+        if not isinstance(parts, list):
+            return None
+        texts: list[str] = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "summary_text":
+                t = part.get("text")
+                if isinstance(t, str):
+                    texts.append(t)
+        if not texts:
+            return None
+        return "".join(texts)
+
+    def _cache_output_item(item: Dict[str, Any], priority: int) -> None:
+        if not isinstance(item, dict):
+            return
+        item_id = item.get("id")
+        if not isinstance(item_id, str):
+            return
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            enc = item.get("encrypted_content")
+            if isinstance(enc, str):
+                reasoning_cache.set_encrypted(item_id, enc, priority)
+        if item_type in {"reasoning", "message", "function_call"}:
+            reasoning_cache.set_item(item_id, item, priority)
+
+    def _capture_event_for_cache(evt: Dict[str, Any]) -> None:
+        kind = evt.get("type")
+        if kind == "response.output_item.added":
+            _cache_output_item(evt.get("item") or {}, PRIORITY_ADDED)
+        elif kind == "response.output_item.done":
+            _cache_output_item(evt.get("item") or {}, PRIORITY_DONE)
+        elif kind == "response.reasoning_summary_text.delta":
+            item_id = evt.get("item_id")
+            delta = evt.get("delta")
+            if isinstance(item_id, str) and isinstance(delta, str):
+                reasoning_cache.append_summary_delta(item_id, delta)
+        elif kind == "response.reasoning_summary_text.done":
+            item_id = evt.get("item_id")
+            text_value = evt.get("text")
+            if isinstance(item_id, str) and isinstance(text_value, str):
+                reasoning_cache.set_summary(item_id, text_value)
+        elif kind == "response.completed":
+            resp_obj = evt.get("response") or {}
+            outputs = resp_obj.get("output")
+            if isinstance(outputs, list):
+                for out in outputs:
+                    if not isinstance(out, dict):
+                        continue
+                    _cache_output_item(out, PRIORITY_COMPLETED)
+                    if out.get("type") == "reasoning":
+                        summary_text = _extract_summary_text(out.get("summary"))
+                        if isinstance(out.get("id"), str) and isinstance(summary_text, str):
+                            reasoning_cache.set_summary(out.get("id"), summary_text)
 
     raw_body = request.get_data(cache=True, as_text=True) or ""
     if verbose:
@@ -719,9 +809,6 @@ def responses() -> Response:
         needs_reasoning_spacing_fix = "codex" not in model_for_fix.lower()
         saw_reasoning_summary_part = False
         pending_reasoning_newline = False
-        PRIORITY_ADDED = 1
-        PRIORITY_DONE = 2
-        PRIORITY_COMPLETED = 3
 
         def _maybe_fix_reasoning_summary(raw_line: Any) -> Any:
             nonlocal saw_reasoning_summary_part, pending_reasoning_newline
@@ -768,64 +855,6 @@ def responses() -> Response:
                     return new_line
             return raw_line
 
-        def _extract_summary_text(parts: Any) -> str | None:
-            if not isinstance(parts, list):
-                return None
-            texts: list[str] = []
-            for part in parts:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "summary_text":
-                    t = part.get("text")
-                    if isinstance(t, str):
-                        texts.append(t)
-            if not texts:
-                return None
-            return "".join(texts)
-
-        def _capture_reasoning_from_event(evt: Dict[str, Any]) -> None:
-            kind = evt.get("type")
-            if kind == "response.output_item.added":
-                item = evt.get("item") or {}
-                if isinstance(item, dict) and item.get("type") == "reasoning":
-                    item_id = item.get("id")
-                    enc = item.get("encrypted_content")
-                    if isinstance(item_id, str) and isinstance(enc, str):
-                        reasoning_cache.set_encrypted(item_id, enc, PRIORITY_ADDED)
-            elif kind == "response.output_item.done":
-                item = evt.get("item") or {}
-                if isinstance(item, dict) and item.get("type") == "reasoning":
-                    item_id = item.get("id")
-                    enc = item.get("encrypted_content")
-                    if isinstance(item_id, str) and isinstance(enc, str):
-                        reasoning_cache.set_encrypted(item_id, enc, PRIORITY_DONE)
-            elif kind == "response.reasoning_summary_text.delta":
-                item_id = evt.get("item_id")
-                delta = evt.get("delta")
-                if isinstance(item_id, str) and isinstance(delta, str):
-                    reasoning_cache.append_summary_delta(item_id, delta)
-            elif kind == "response.reasoning_summary_text.done":
-                item_id = evt.get("item_id")
-                text_value = evt.get("text")
-                if isinstance(item_id, str) and isinstance(text_value, str):
-                    reasoning_cache.set_summary(item_id, text_value)
-            elif kind == "response.completed":
-                resp_obj = evt.get("response") or {}
-                outputs = resp_obj.get("output")
-                if isinstance(outputs, list):
-                    for out in outputs:
-                        if not isinstance(out, dict):
-                            continue
-                        if out.get("type") != "reasoning":
-                            continue
-                        item_id = out.get("id")
-                        enc = out.get("encrypted_content")
-                        if isinstance(item_id, str) and isinstance(enc, str):
-                            reasoning_cache.set_encrypted(item_id, enc, PRIORITY_COMPLETED)
-                        summary_text = _extract_summary_text(out.get("summary"))
-                        if isinstance(item_id, str) and isinstance(summary_text, str):
-                            reasoning_cache.set_summary(item_id, summary_text)
-
         def _capture_line_for_cache(raw_line: Any) -> None:
             if raw_line is None:
                 return
@@ -843,7 +872,7 @@ def responses() -> Response:
             except Exception:
                 return
             if isinstance(evt, dict):
-                _capture_reasoning_from_event(evt)
+                _capture_event_for_cache(evt)
 
         try:
             first_line = next(line_iter)
@@ -858,12 +887,14 @@ def responses() -> Response:
                 if first_line is not None:
                     # iter_lines 移除換行；SSE 需還原
                     line_bytes = first_line if isinstance(first_line, (bytes, bytearray)) else str(first_line).encode("utf-8")
+                    # print(line_bytes)
                     yield line_bytes + b"\n"
                 for line in line_iter:
                     # 注意：空行需保留，代表事件分隔
                     fixed_line = _maybe_fix_reasoning_summary(line)
                     _capture_line_for_cache(fixed_line)
                     line_bytes = fixed_line if isinstance(fixed_line, (bytes, bytearray)) else str(fixed_line).encode("utf-8")
+                    # print(line_bytes)
                     yield line_bytes + b"\n"
             except (GeneratorExit, BrokenPipeError):
                 # 客戶端斷線
@@ -931,6 +962,8 @@ def responses() -> Response:
                 evt = json.loads(data)
             except Exception:
                 continue
+            if isinstance(evt, dict):
+                _capture_event_for_cache(evt)
             if isinstance(evt.get("response"), dict):
                 latest_response = evt.get("response")
                 if isinstance(latest_response.get("usage"), dict):
@@ -1143,6 +1176,8 @@ def list_models() -> Response:
         ("codex-mini", []),
         ("gpt-5-mini", []),
         ("gpt-5.1-mini", []),
+        ("text-embedding-3-large", []),
+        ("text-embedding-3-small", []),
     ]
     model_ids: List[str] = []
     for base, efforts in model_groups:
